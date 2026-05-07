@@ -29753,6 +29753,9 @@ class Compiler
       end
     elsif is_tuple_type(infer_type(val_id)) == 1
       # RHS is a tuple-returning call — destructure via field access.
+      # Route every slot through emit_multi_write_target so ivar /
+      # constant / attr-writer / index targets (not just local vars)
+      # all get the per-component assignment.
       val_t = infer_type(val_id)
       @needs_gc = 1
       tmp = new_temp
@@ -29761,9 +29764,9 @@ class Compiler
       k = 0
       while k < targets.length
         tid = targets[k]
-        if @nd_type[tid] == "LocalVariableTargetNode"
-          emit("  " + fiber_var_ref(@nd_name[tid]) + " = " + tmp + "->_" + k.to_s + ";")
-        end
+        slot_expr = tmp + "->_" + k.to_s
+        slot_type = tuple_elem_type_at(val_t, k)
+        emit_multi_write_target(tid, slot_expr, slot_type)
         k = k + 1
       end
     else
