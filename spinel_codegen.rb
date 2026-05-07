@@ -12286,11 +12286,13 @@ class Compiler
 
  # Bigint methods
     if recv_type == "bigint"
+      # Cast away volatile from bigint locals (see compile_bigint_arg).
+      rc_b = "(sp_Bigint *)" + rc
       if mname == "to_s"
-        return "sp_bigint_to_s(" + rc + ")"
+        return "sp_bigint_to_s(" + rc_b + ")"
       end
       if mname == "to_i"
-        return "sp_bigint_to_int(" + rc + ")"
+        return "sp_bigint_to_int(" + rc_b + ")"
       end
     end
 
@@ -26710,7 +26712,8 @@ class Compiler
         next
       end
       if at == "bigint"
-        emit("  { const char *_bs = sp_bigint_to_s(" + val + "); fputs(_bs, stdout); putchar('" + bsl_n + "'); }")
+        # Cast away volatile from bigint locals (see compile_bigint_arg).
+        emit("  { const char *_bs = sp_bigint_to_s((sp_Bigint *)" + val + "); fputs(_bs, stdout); putchar('" + bsl_n + "'); }")
         k = k + 1
         next
       end
@@ -26828,7 +26831,8 @@ class Compiler
       at = infer_type(aid)
       val = compile_expr(aid)
       if at == "bigint"
-        emit("  fputs(sp_bigint_to_s(" + val + "), stdout);")
+        # Cast away volatile from bigint locals (see compile_bigint_arg).
+        emit("  fputs(sp_bigint_to_s((sp_Bigint *)" + val + "), stdout);")
         k = k + 1
         next
       end
