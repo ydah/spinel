@@ -12015,21 +12015,13 @@ class Compiler
       @current_class_idx = ci
       bodies = @cls_meth_bodies[ci].split(";")
       mnames = @cls_meth_names[ci].split(";")
-      all_params = @cls_meth_params[ci].split("|")
-      all_ptypes = @cls_meth_ptypes[ci].split("|")
       bj = 0
       while bj < bodies.length
         bid = bodies[bj].to_i
         if bid >= 0
           push_scope
-          pnames2 = "".split(",")
-          ptypes2 = "".split(",")
-          if bj < all_params.length
-            pnames2 = all_params[bj].split(",")
-          end
-          if bj < all_ptypes.length
-            ptypes2 = all_ptypes[bj].split(",")
-          end
+          pnames2 = cls_meth_pnames_get(ci, bj)
+          ptypes2 = cls_meth_ptypes_get(ci, bj)
           pk = 0
           while pk < pnames2.length
             pt = "int"
@@ -14279,32 +14271,19 @@ class Compiler
       return ivt
     end
     # Scan initialize body for @ivar = param assignments
-    all_bodies = @cls_meth_bodies[ci].split(";")
-    all_mnames = @cls_meth_names[ci].split(";")
-    all_params = @cls_meth_params[ci].split("|")
-    all_ptypes = @cls_meth_ptypes[ci].split("|")
-    bj = 0
-    while bj < all_mnames.length
-      if all_mnames[bj] == "initialize"
-        bid = all_bodies[bj].to_i
-        if bid >= 0
-          pnames = "".split(",")
-          ptypes = "".split(",")
-          if bj < all_params.length
-            pnames = all_params[bj].split(",")
-          end
-          if bj < all_ptypes.length
-            ptypes = all_ptypes[bj].split(",")
-          end
-          # Find @ivar = param_name in initialize body
-          resolve_ivar_from_body(ci, bid, iname, pnames, ptypes)
-          ivt2 = cls_ivar_type(ci, iname)
-          if ivt2 != "int"
-            return ivt2
-          end
+    bj = cls_find_method_direct(ci, "initialize")
+    if bj >= 0
+      bodies = @cls_meth_bodies[ci].split(";")
+      bid = bj < bodies.length ? bodies[bj].to_i : -1
+      if bid >= 0
+        pnames = cls_meth_pnames_get(ci, bj)
+        ptypes = cls_meth_ptypes_get(ci, bj)
+        resolve_ivar_from_body(ci, bid, iname, pnames, ptypes)
+        ivt2 = cls_ivar_type(ci, iname)
+        if ivt2 != "int"
+          return ivt2
         end
       end
-      bj = bj + 1
     end
     ""
   end
@@ -29295,13 +29274,9 @@ class Compiler
     if args_id >= 0
       arg_ids = get_args(args_id)
     end
-    all_ptypes = @cls_meth_ptypes[target_ci].split("|")
     all_defaults = @cls_meth_defaults[target_ci].split("|")
-    ptypes = "".split(",")
+    ptypes = cls_meth_ptypes_get(target_ci, target_midx)
     defaults = "".split(",")
-    if target_midx < all_ptypes.length
-      ptypes = all_ptypes[target_midx].split(",")
-    end
     if target_midx < all_defaults.length
       defaults = all_defaults[target_midx].split(",")
     end
@@ -38243,16 +38218,8 @@ class Compiler
     suffix = "_y" + @block_counter.to_s
 
     # For the method params and locals, create remapped names
-    all_params = @cls_meth_params[cci].split("|")
-    all_ptypes = @cls_meth_ptypes[cci].split("|")
-    pnames = "".split(",")
-    ptypes = "".split(",")
-    if midx < all_params.length
-      pnames = all_params[midx].split(",")
-    end
-    if midx < all_ptypes.length
-      ptypes = all_ptypes[midx].split(",")
-    end
+    pnames = cls_meth_pnames_get(cci, midx)
+    ptypes = cls_meth_ptypes_get(cci, midx)
 
     map_from = "".split(",")
     map_to = "".split(",")
