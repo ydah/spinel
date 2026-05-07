@@ -9,6 +9,21 @@
 #   make clean        Remove built binaries
 
 CC       ?= cc
+# Auto-wrap CC with sccache or ccache when present. Skip when CC is
+# already wrapped — the substring guard catches both "ccache" and
+# "sccache" since "ccache" is a substring of "sccache", so CI's
+# `CC=sccache <cc>` env stays untouched. NO_CCACHE=1 opts out.
+# `override` is required so that `make CC=gcc` (command-line CC) is
+# also wrapped — without it, command-line CC takes precedence over
+# Makefile assignments and the wrap is silently ignored.
+ifeq (,$(findstring ccache,$(CC)))
+ifeq (,$(NO_CCACHE))
+  CCACHE_BIN := $(shell command -v sccache 2>/dev/null || command -v ccache 2>/dev/null)
+  ifneq (,$(CCACHE_BIN))
+    override CC := $(CCACHE_BIN) $(CC)
+  endif
+endif
+endif
 # `-Wno-alloc-size-larger-than` silences a gcc 13+ paranoia warning that
 # fires on the inlined `h->cap *= 2` in sp_*Hash_grow when the inliner
 # can't bound h->cap. The pattern is bounded in practice (cap doubles
@@ -104,7 +119,10 @@ PRISM_SRC    = $(wildcard $(PRISM_DIR)/src/*.c) $(wildcard $(PRISM_DIR)/src/util
 PRISM_OBJ    = $(patsubst $(PRISM_DIR)/src/%.c,build/prism/%.o,$(PRISM_SRC))
 PRISM_LIB    = build/libprism.a
 
-.PHONY: all parse bootstrap codegen test test-run clean-test-results regen-expected bench clean install uninstall deps
+CODEGEN_STAMP := build/stamps/spinel_codegen.rb.stamp
+PARSE_STAMP   := build/stamps/spinel_parse.c.stamp
+
+.PHONY: all parse bootstrap codegen test retest clean-test-results regen-expected bench clean install uninstall deps
 
 all: parse regexp spinel_codegen$(EXE)
 
@@ -149,12 +167,27 @@ build/prism/%.o: $(PRISM_DIR)/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c -O2 -I$(PRISM_INC) -I$(PRISM_DIR)/src $< -o $@
 
+# ---- Content stamps ----
+# Content stamps: rules depend on `build/stamps/foo.stamp` instead of
+# `foo` directly, so `touch foo` (or `git checkout` of an identical
+# version) doesn't invalidate downstream targets. cmp-or-replace
+# advances the stamp's mtime only on real content change.
+build/stamps:
+	@mkdir -p $@
+
+build/stamps/%.stamp: % | build/stamps
+	@cmp -s $< $@ 2>/dev/null || cp $< $@
+
+# Without .PRECIOUS make would delete these as pattern-rule
+# intermediates, recreating them with fresh mtimes next run.
+.PRECIOUS: build/stamps/%.stamp
+
 # ---- C Parser ----
 
 parse: spinel_parse$(EXE)
 
-spinel_parse$(EXE): spinel_parse.c $(PRISM_LIB)
-	$(CC) $(CFLAGS) -I$(PRISM_INC) $< $(PRISM_LIB) -lm -o $@
+spinel_parse$(EXE): $(PARSE_STAMP) $(PRISM_LIB)
+	$(CC) $(CFLAGS) -I$(PRISM_INC) spinel_parse.c $(PRISM_LIB) -lm -o $@
 
 # ---- Runtime library (regexp + bigint) ----
 
@@ -184,7 +217,7 @@ regexp: $(SP_RT_LIB)
 
 codegen: spinel_codegen$(EXE)
 
-spinel_codegen$(EXE): spinel_codegen.rb spinel_parse$(EXE)
+spinel_codegen$(EXE): $(CODEGEN_STAMP) spinel_parse$(EXE)
 	./spinel_parse$(EXE) spinel_codegen.rb build/codegen.ast
 	ruby spinel_codegen.rb build/codegen.ast build/gen1.c
 	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/gen1.c $(LDFLAGS) -lm -o spinel_codegen$(EXE)
@@ -209,10 +242,9 @@ bootstrap: spinel_codegen$(EXE)
 TESTS := $(wildcard test/*.rb)
 TEST_TARGETS := $(patsubst test/%.rb,build/test-results/%.ok,$(TESTS))
 
-test: clean-test-results
-	@$(MAKE) --no-print-directory test-run
-
-test-run: $(TEST_TARGETS)
+# `make test` is incremental via mtime tracking on .ok files;
+# `make retest` wipes them for a forced rerun.
+test: $(TEST_TARGETS)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
 	@if [ -t 1 ]; then printf '\n'; fi
 	@pass=$$(grep -l '^PASS' build/test-results/*.ok 2>/dev/null | wc -l); \
@@ -231,7 +263,13 @@ test-run: $(TEST_TARGETS)
 	echo "Tests: $$pass pass, $$fail fail, $$err error"; \
 	if [ $$fail -ne 0 ] || [ $$err -ne 0 ]; then exit 1; fi
 
-build/test-results/%.ok: test/%.rb spinel_parse$(EXE) $(SP_RT_LIB) spinel_codegen$(EXE)
+retest: clean-test-results
+	@$(MAKE) --no-print-directory test
+
+# The .ok target is the test's stamp; mtime tracking gives per-test
+# caching for free. Order-only spinel_parse$(EXE) / spinel_codegen$(EXE)
+# stop a bootstrap relink from invalidating every test.
+build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(CODEGEN_STAMP) $(PARSE_STAMP) | spinel_parse$(EXE) spinel_codegen$(EXE)
 	@mkdir -p build/test-results
 	@tmpdir=$$(mktemp -d /tmp/spinel-test.XXXXXX); \
 	ast=$$tmpdir/test.ast; \
