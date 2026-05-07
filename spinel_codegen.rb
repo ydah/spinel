@@ -9950,9 +9950,8 @@ class Compiler
               args_id = @nd_arguments[nid]
               if args_id >= 0
                 arg_ids = get_args(args_id)
-                all_ptypes = @cls_meth_ptypes[owner_ci].split("|")
-                if midx < all_ptypes.length
-                  ptypes = all_ptypes[midx].split(",")
+                ptypes = cls_meth_ptypes_get(owner_ci, midx)
+                if ptypes.length > 0
                   kk = 0
                   while kk < arg_ids.length
                     at = infer_type(arg_ids[kk])
@@ -9965,8 +9964,7 @@ class Compiler
                     end
                     kk = kk + 1
                   end
-                  all_ptypes[midx] = ptypes.join(",")
-                  @cls_meth_ptypes[owner_ci] = all_ptypes.join("|")
+                  cls_meth_ptypes_put(owner_ci, midx, ptypes)
                 end
               end
             end
@@ -10637,27 +10635,19 @@ class Compiler
               args_id = @nd_arguments[nid]
               if args_id >= 0
                 arg_ids = get_args(args_id)
-                all_ptypes = @cls_meth_ptypes[owner_ci].split("|")
-                if midx < all_ptypes.length
-                  ptypes = all_ptypes[midx].split(",")
-                  kk = 0
-                  while kk < arg_ids.length
-                    at = infer_type(arg_ids[kk])
-                    if kk < ptypes.length
-                      # Unify against the existing param type rather
-                      # than only widening from "int". The previous
-                      # rule let the FIRST non-int call site freeze
-                      # the param type; subsequent disagreeing calls
-                      # (e.g. addr arg seen as Range from one site
-                      # and as Integer from another) compiled to a
-                      # signature mismatch. unify_call_types collapses
-                      # incompatible types to "poly".
-                      ptypes[kk] = unify_call_types(ptypes[kk], at, arg_ids[kk])
-                    end
-                    kk = kk + 1
-                  end
-                  all_ptypes[midx] = ptypes.join(",")
-                  @cls_meth_ptypes[owner_ci] = all_ptypes.join("|")
+                # Unify against the existing param type rather
+                # than only widening from "int". A first-non-int-
+                # wins rule would let one call site freeze the
+                # param type and a later disagreeing site (e.g.
+                # `addr` seen as Range from one and Integer from
+                # another) lands as a signature mismatch.
+                # unify_call_types collapses incompatibles to
+                # "poly".
+                ptypes = cls_meth_ptypes_get(owner_ci, midx)
+                if ptypes.length > 0
+                  pnames = cls_meth_pnames_get(owner_ci, midx)
+                  widen_ptypes_from_args(arg_ids, pnames, ptypes)
+                  cls_meth_ptypes_put(owner_ci, midx, ptypes)
                 end
               end
             end
@@ -10714,24 +10704,18 @@ class Compiler
             if cci >= 0
               cmname = @nd_name[nid]
               cmnames = @cls_cmeth_names[cci].split(";")
-              cm_ptypes_all = @cls_cmeth_ptypes[cci].split("|")
               cmidx = 0
               while cmidx < cmnames.length
                 if cmnames[cmidx] == cmname
                   args_id = @nd_arguments[nid]
-                  if args_id >= 0 && cmidx < cm_ptypes_all.length
+                  if args_id >= 0
                     arg_ids = get_args(args_id)
-                    cmptypes = cm_ptypes_all[cmidx].split(",")
-                    kk = 0
-                    while kk < arg_ids.length
-                      at = infer_type(arg_ids[kk])
-                      if kk < cmptypes.length
-                        cmptypes[kk] = unify_call_types(cmptypes[kk], at, arg_ids[kk])
-                      end
-                      kk = kk + 1
+                    cmptypes = cls_cmeth_ptypes_get(cci, cmidx)
+                    if cmptypes.length > 0
+                      cmpnames = cls_cmeth_pnames_get(cci, cmidx)
+                      widen_ptypes_from_args(arg_ids, cmpnames, cmptypes)
+                      cls_cmeth_ptypes_put(cci, cmidx, cmptypes)
                     end
-                    cm_ptypes_all[cmidx] = cmptypes.join(",")
-                    @cls_cmeth_ptypes[cci] = cm_ptypes_all.join("|")
                   end
                 end
                 cmidx = cmidx + 1
@@ -10965,9 +10949,8 @@ class Compiler
         if init_ci >= 0
           init_idx = cls_find_method_direct(init_ci, "initialize")
           if init_idx >= 0
-            all_ptypes = @cls_meth_ptypes[init_ci].split("|")
-            if init_idx < all_ptypes.length
-              init_ptypes = all_ptypes[init_idx].split(",")
+            init_ptypes = cls_meth_ptypes_get(init_ci, init_idx)
+            if init_ptypes.length > 0
               kk = 0
               while kk < arg_ids.length
                 at = ""
@@ -10989,8 +10972,7 @@ class Compiler
                 end
                 kk = kk + 1
               end
-              all_ptypes[init_idx] = init_ptypes.join(",")
-              @cls_meth_ptypes[init_ci] = all_ptypes.join("|")
+              cls_meth_ptypes_put(init_ci, init_idx, init_ptypes)
             end
           end
         end
@@ -17690,6 +17672,81 @@ class Compiler
       j = j + 1
     end
     -1
+  end
+
+  # Helpers for the per-method split-join boilerplate around
+  # @cls_meth_ptypes / @cls_cmeth_ptypes / @cls_meth_params /
+  # @cls_cmeth_params. Each table stores per-class strings where
+  # methods are pipe-separated (`|`) and per-method names/types
+  # are comma-separated (`,`).  Without these, every read site
+  # opens with two split() calls + bound checks and every write
+  # site closes with two join() calls.
+  def cls_meth_ptypes_get(ci, midx)
+    if ci < 0 || ci >= @cls_meth_ptypes.length || midx < 0
+      return "".split(",")
+    end
+    all = @cls_meth_ptypes[ci].split("|")
+    if midx >= all.length
+      return "".split(",")
+    end
+    all[midx].split(",")
+  end
+
+  def cls_meth_ptypes_put(ci, midx, ptypes)
+    if ci < 0 || ci >= @cls_meth_ptypes.length || midx < 0
+      return
+    end
+    all = @cls_meth_ptypes[ci].split("|")
+    if midx >= all.length
+      return
+    end
+    all[midx] = ptypes.join(",")
+    @cls_meth_ptypes[ci] = all.join("|")
+  end
+
+  def cls_meth_pnames_get(ci, midx)
+    if ci < 0 || ci >= @cls_meth_params.length || midx < 0
+      return "".split(",")
+    end
+    all = @cls_meth_params[ci].split("|")
+    if midx >= all.length
+      return "".split(",")
+    end
+    all[midx].split(",")
+  end
+
+  def cls_cmeth_ptypes_get(ci, midx)
+    if ci < 0 || ci >= @cls_cmeth_ptypes.length || midx < 0
+      return "".split(",")
+    end
+    all = @cls_cmeth_ptypes[ci].split("|")
+    if midx >= all.length
+      return "".split(",")
+    end
+    all[midx].split(",")
+  end
+
+  def cls_cmeth_ptypes_put(ci, midx, ptypes)
+    if ci < 0 || ci >= @cls_cmeth_ptypes.length || midx < 0
+      return
+    end
+    all = @cls_cmeth_ptypes[ci].split("|")
+    if midx >= all.length
+      return
+    end
+    all[midx] = ptypes.join(",")
+    @cls_cmeth_ptypes[ci] = all.join("|")
+  end
+
+  def cls_cmeth_pnames_get(ci, midx)
+    if ci < 0 || ci >= @cls_cmeth_params.length || midx < 0
+      return "".split(",")
+    end
+    all = @cls_cmeth_params[ci].split("|")
+    if midx >= all.length
+      return "".split(",")
+    end
+    all[midx].split(",")
   end
 
   # Walk the inheritance chain starting at class `ci` looking for the
