@@ -10363,6 +10363,22 @@ class Compiler
                         cmidx_304 = cmidx_304 + 1
                       end
                     end
+                    # Issue #314 follow-up: when the candidate is a
+                    # module (not a class), its `def self.method` is
+                    # stored in `@meth_*` as `<Mod>_cls_<m>` rather
+                    # than in `@cls_cmeth_*`. Mirror #239's parallel
+                    # branch so a `Mod.accessor.method(args)` call site
+                    # widens the synthetic top-level function's params.
+                    if module_name_exists(cn_304) == 1
+                      mfn_304m = cn_304 + "_cls_" + outer_mname_304
+                      mi_304m = find_method_idx(mfn_304m)
+                      if mi_304m >= 0
+                        pnames_304m = @meth_param_names[mi_304m].split(",")
+                        ptypes_304m = @meth_param_types[mi_304m].split(",")
+                        widen_ptypes_from_args(arg_ids_304, pnames_304m, ptypes_304m)
+                        @meth_param_types[mi_304m] = ptypes_304m.join(",")
+                      end
+                    end
                   }
                 end
               end
@@ -21125,6 +21141,36 @@ class Compiler
           rconsts = module_acc_resolved(mod_name, inner_mname)
           if rconsts != "" && rconsts != "?"
             args_id = @nd_arguments[nid]
+            cands = rconsts.split(";")
+            # Issue #314 follow-up: scan_new_calls' #304 widening
+            # has already unified the candidates' per-arg ptypes,
+            # so any candidate's ptypes table tells us the target
+            # types here. Box each arg expression to match — without
+            # this, an int arg passed to a poly-widened param emits
+            # raw `mrb_int` to a `sp_RbVal` slot (Wint-conversion).
+            target_ptypes = "".split(",")
+            cands.each { |cn_t|
+              cci_t = find_class_idx(cn_t)
+              if cci_t >= 0
+                pall_t = @cls_cmeth_ptypes[cci_t].split("|")
+                cmnames_t = @cls_cmeth_names[cci_t].split(";")
+                cmidx_t = 0
+                while cmidx_t < cmnames_t.length
+                  if cmnames_t[cmidx_t] == mname && cmidx_t < pall_t.length
+                    target_ptypes = pall_t[cmidx_t].split(",")
+                    cmidx_t = cmnames_t.length
+                  end
+                  cmidx_t = cmidx_t + 1
+                end
+              end
+              if target_ptypes.length == 0 && module_name_exists(cn_t) == 1
+                mfn_t = cn_t + "_cls_" + mname
+                mi_t = find_method_idx(mfn_t)
+                if mi_t >= 0
+                  target_ptypes = @meth_param_types[mi_t].split(",")
+                end
+              end
+            }
             arg_strs = ""
             if args_id >= 0
               aargs = get_args(args_id)
@@ -21133,11 +21179,14 @@ class Compiler
                 if k > 0
                   arg_strs = arg_strs + ", "
                 end
-                arg_strs = arg_strs + compile_expr(aargs[k])
+                if k < target_ptypes.length && base_type(target_ptypes[k]) == "poly"
+                  arg_strs = arg_strs + box_expr_to_poly(aargs[k])
+                else
+                  arg_strs = arg_strs + compile_expr(aargs[k])
+                end
                 k = k + 1
               end
             end
-            cands = rconsts.split(";")
             if cands.length == 1
               return "sp_" + cands[0] + "_cls_" + sanitize_name(mname) + "(" + arg_strs + ")"
             end
