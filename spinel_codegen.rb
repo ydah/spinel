@@ -4114,6 +4114,20 @@ class Compiler
         return infer_type(recv)
       end
     end
+    # `clear` mutates in place and returns the now-empty receiver.
+    # Same shape as `replace`: preserve the receiver's array/string
+    # type so chained or `||=`-style usage doesn't fall back to int.
+    if mname == "clear"
+      if recv >= 0
+        rt_clr = infer_type(recv)
+        if rt_clr == "int_array" || rt_clr == "sym_array" ||
+           rt_clr == "str_array" || rt_clr == "float_array" ||
+           rt_clr == "poly_array" || is_ptr_array_type(rt_clr) == 1 ||
+           rt_clr == "string" || rt_clr == "mutable_str"
+          return rt_clr
+        end
+      end
+    end
     if mname == "pop"
       if recv >= 0
         rt = infer_type(recv)
@@ -26925,6 +26939,13 @@ class Compiler
           arg_id = aargs[0]
         end
         return "(sp_PolyArray_push(" + rc + ", " + box_expr_to_poly(arg_id) + "), 0)"
+      end
+      # `clear` in expression position (e.g. `@x ||= @arr.clear`).
+      # Mirrors the stmt-form arm in compile_*_stmt: zero the
+      # length, leave capacity/buffer alone, return the (now-empty)
+      # array so the caller can chain.
+      if mname == "clear"
+        return "(" + rc + "->len = 0, " + rc + ")"
       end
     end
     ""
