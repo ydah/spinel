@@ -26467,6 +26467,26 @@ class Compiler
       if mname == "replace" && recv_type == "int_array"
         return "(sp_IntArray_replace(" + rc + ", " + compile_arg0(nid) + "), " + rc + ")"
       end
+      # `a[i] = v` in expression position. The stmt-form is
+      # handled by `compile_bracket_assign`; in rvalue chains like
+      # `@io_latch = @sp_ram[i] = mask(data)` (optcarrot PPU), the
+      # call lands here. Lift idx/val into temps so each side is
+      # evaluated exactly once, then return the rhs (Ruby `[]=`
+      # semantics).
+      if mname == "[]=" && recv_type == "int_array"
+        args_id = @nd_arguments[nid]
+        if args_id >= 0
+          a_set = get_args(args_id)
+          if a_set.length >= 2
+            idx_tmp = new_temp
+            val_tmp = new_temp
+            emit("  mrb_int " + idx_tmp + " = " + compile_expr(a_set[0]) + ";")
+            emit("  mrb_int " + val_tmp + " = " + compile_expr(a_set[1]) + ";")
+            emit("  sp_IntArray_set(" + rc + ", " + idx_tmp + ", " + val_tmp + ");")
+            return val_tmp
+          end
+        end
+      end
       # take_while / drop_while: block-driven prefix scan. take_while
       # collects elements from the front while the block stays truthy;
       # drop_while skips them and returns the rest. Mirrors the
