@@ -26565,6 +26565,14 @@ class Compiler
       if mname == "difference"
         return "sp_FloatArray_difference(" + rc + ", " + compile_arg0(nid) + ")"
       end
+      if mname == "sort"
+        # Non-bang: yield a fresh sorted copy. Mirror the
+        # `sp_FloatArray_shuffle` pattern (new + replace) so the
+        # source array is left untouched.
+        tmp = new_temp
+        emit("  sp_FloatArray *" + tmp + " = sp_FloatArray_new(); sp_FloatArray_replace(" + tmp + ", " + rc + "); sp_FloatArray_sort_bang(" + tmp + ");")
+        return tmp
+      end
     end
     if is_ptr_array_type(recv_type) == 1
       elem_type = ptr_array_elem_type(recv_type)
