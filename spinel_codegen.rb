@@ -10971,6 +10971,150 @@ class Compiler
   # resolve via the cls method's pnames/ptypes; other args fall
   # through to infer_type with @current_class_idx pinned so
   # @ivar refs in the args resolve against the right class.
+  # Propagate ptypes from child#initialize to parent#initialize via
+  # super calls. Without this, a `Sub.new(owner_obj)` site widens
+  # `Sub#initialize`'s `_owner` param to `obj_<C>` correctly (via
+  # the existing constructor branch in scan_new_calls), but the
+  # body's bare `super` lowers to a C call against the parent's
+  # `Base#initialize`, whose param ptype stays at the default
+  # `mrb_int` because no call-site path widens the *parent's*
+  # initialize through super. The C output then casts the typed
+  # pointer to `mrb_int` at the super-call site, the parent's body's
+  # `@owner = owner` records the int into the slot, and every
+  # subsequent `@owner.<method>` dispatch on a child instance lands
+  # on whatever class shares the int recv's cls_id — commonly the
+  # wrong one.
+  #
+  # ForwardingSuperNode (bare `super`): forwards every param of the
+  # current method by name. Unify the parent ptypes element-wise
+  # against the child ptypes (capped at min length, so a wider
+  # parent signature stays unwidened past the forwarded prefix).
+  #
+  # SuperNode (`super(arg1, arg2, …)`): explicit arg list. Each arg
+  # might be a LocalVariableReadNode that points back at one of the
+  # current method's params; if so, use the param's ptype to unify
+  # at the super arg's position. Other shapes (literals, calls)
+  # fall through to infer_type.
+  def propagate_super_init_to_parent
+    ci = 0
+    while ci < @cls_names.length
+      if @cls_parents[ci] != ""
+        parent_ci = find_class_idx(@cls_parents[ci])
+        # The parent chain may insert classes without their own
+        # #initialize (e.g. an empty marker subclass between the
+        # super caller and its semantic parent). Walk up until we
+        # find one that does.
+        walk_ci = parent_ci
+        parent_init_ci = -1
+        while walk_ci >= 0
+          if cls_find_method_direct(walk_ci, "initialize") >= 0
+            parent_init_ci = walk_ci
+            break
+          end
+          parent_str = @cls_parents[walk_ci]
+          if parent_str == ""
+            break
+          end
+          walk_ci = find_class_idx(parent_str)
+        end
+        if parent_init_ci >= 0
+          propagate_super_init_one(ci, parent_init_ci)
+        end
+      end
+      ci = ci + 1
+    end
+  end
+
+  def propagate_super_init_one(child_ci, parent_init_ci)
+    child_init_idx = cls_find_method_direct(child_ci, "initialize")
+    if child_init_idx < 0
+      return
+    end
+    bodies = @cls_meth_bodies[child_ci].split(";")
+    if child_init_idx >= bodies.length
+      return
+    end
+    bid = bodies[child_init_idx].to_i
+    if bid < 0
+      return
+    end
+    child_pnames = cls_meth_pnames_get(child_ci, child_init_idx)
+    child_ptypes = cls_meth_ptypes_get(child_ci, child_init_idx)
+    parent_init_idx = cls_find_method_direct(parent_init_ci, "initialize")
+    if parent_init_idx < 0
+      return
+    end
+    parent_ptypes = cls_meth_ptypes_get(parent_init_ci, parent_init_idx)
+    if parent_ptypes.length == 0
+      return
+    end
+    propagate_super_walk(bid, child_pnames, child_ptypes, parent_ptypes)
+    cls_meth_ptypes_put(parent_init_ci, parent_init_idx, parent_ptypes)
+  end
+
+  def propagate_super_walk(nid, child_pnames, child_ptypes, parent_ptypes)
+    if nid < 0
+      return
+    end
+    nt = @nd_type[nid]
+    if nt == "DefNode"
+      return
+    end
+    if nt == "ForwardingSuperNode"
+      # Bare `super`: forward every child param into the parent's slot
+      # at the same position, capped at min length.
+      kk = 0
+      lim = child_ptypes.length
+      if parent_ptypes.length < lim
+        lim = parent_ptypes.length
+      end
+      while kk < lim
+        ct = child_ptypes[kk]
+        if ct != "" && ct != "int"
+          parent_ptypes[kk] = unify_call_types(parent_ptypes[kk], ct, -1)
+        end
+        kk = kk + 1
+      end
+      return
+    end
+    if nt == "SuperNode"
+      args_id = @nd_arguments[nid]
+      if args_id >= 0
+        a_ids = get_args(args_id)
+        kk = 0
+        while kk < a_ids.length && kk < parent_ptypes.length
+          aid = a_ids[kk]
+          at = ""
+          if @nd_type[aid] == "LocalVariableReadNode"
+            vname = @nd_name[aid]
+            pi = 0
+            while pi < child_pnames.length
+              if child_pnames[pi] == vname && pi < child_ptypes.length
+                at = child_ptypes[pi]
+              end
+              pi = pi + 1
+            end
+          end
+          if at == ""
+            at = infer_type(aid)
+          end
+          if at != "" && at != "int"
+            parent_ptypes[kk] = unify_call_types(parent_ptypes[kk], at, aid)
+          end
+          kk = kk + 1
+        end
+      end
+      return
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      propagate_super_walk(cs[k], child_pnames, child_ptypes, parent_ptypes)
+      k = k + 1
+    end
+  end
+
   def propagate_bare_new_to_subclass_initialize
     ci = 0
     while ci < @cls_names.length
@@ -13303,6 +13447,15 @@ class Compiler
     # subsequent rounds pick up cls method widening from new call
     # sites.
     propagate_bare_new_to_subclass_initialize
+    # `super` inside a child's `#initialize` calls the parent's
+    # initialize with the child's params. Propagate the child's
+    # ptypes (already widened by scan_new_calls' constructor branch
+    # for `Child.new(args)` call sites) into the parent's ptypes so
+    # the parent's body sees the right param types for `@apu = apu`
+    # ivar widening — without this the parent's slot stays at the
+    # default `mrb_int` even when every `Child.new` site passes a
+    # typed pointer.
+    propagate_super_init_to_parent
     # Update ivar types from constructor params
     update_ivar_types_from_params
     # Infer setter param types from ivar types
