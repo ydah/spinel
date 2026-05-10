@@ -10995,6 +10995,13 @@ class Compiler
       if mname == "strftime"
         return "sp_time_strftime(" + rc + ", " + compile_arg0(nid) + ")"
       end
+      # Issue #418: Time#utc — same instant with the presentation
+      # flag flipped to UTC. Returns a sp_Time so chained calls
+      # (`Time.now.utc.iso8601`) lower correctly via sp_time_iso8601's
+      # is_utc branch.
+      if mname == "utc"
+        return "sp_time_utc(" + rc + ")"
+      end
     end
 
     # Complex (value-type sp_Complex)

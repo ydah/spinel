@@ -123,8 +123,14 @@ static inline sp_Complex sp_complex_conjugate(sp_Complex a){sp_Complex c;c.re=a.
 /* ---- Time runtime ---- */
 /* sp_Time keeps Time.now / Time.at as value-typed structs. d78149b's
    sub-second precision is preserved by inlining tv_sec + tv_nsec/1e9
-   at every Time#to_f / Time#- call site (see spinel_codegen.rb). */
-typedef struct { int64_t tv_sec; int32_t tv_nsec; } sp_Time;
+   at every Time#to_f / Time#- call site (see spinel_codegen.rb).
+   Issue #418: `is_utc` distinguishes UTC-coerced times (set by
+   `Time#utc`) from local-zone times — a presentation-only flag,
+   the underlying epoch is the same instant either way. iso8601 /
+   strftime check the flag at format time. C99 compound literals
+   zero-init missing fields, so existing `(sp_Time){sec, nsec}`
+   sites stay valid (default to local zone). */
+typedef struct { int64_t tv_sec; int32_t tv_nsec; int8_t is_utc; } sp_Time;
 static inline sp_Time sp_time_now(void) {
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
@@ -242,15 +248,16 @@ static void sp_str_sweep(void) {
 }
 
 /* Issue #414: Time#strftime — format the time per `fmt` using libc
-   strftime against the local-time broken-down value. Returns a
-   freshly-allocated string (sp_str_dup_external'd into the str heap
-   so GC tracks it). The 256-byte buffer is enough for every format
-   CRuby builds in (the longest is %c which produces ~25 bytes);
-   custom formats that exceed it get truncated. */
+   strftime. The is_utc flag (#418) selects gmtime vs localtime so a
+   `Time.now.utc.strftime("%H")` runs against the UTC broken-down
+   value. Returns a freshly-allocated string (sp_str_dup_external'd
+   into the str heap so GC tracks it). The 256-byte buffer is enough
+   for every format CRuby builds in (the longest is %c which produces
+   ~25 bytes); custom formats that exceed it get truncated. */
 static const char *sp_time_strftime(sp_Time t, const char *fmt) {
   char buf[256];
   time_t s = (time_t)t.tv_sec;
-  struct tm *lt = localtime(&s);
+  struct tm *lt = t.is_utc ? gmtime(&s) : localtime(&s);
   if (lt == NULL) return SPL("");
   size_t n = strftime(buf, sizeof(buf), fmt, lt);
   if (n == 0) return SPL("");
@@ -260,19 +267,28 @@ static const char *sp_time_strftime(sp_Time t, const char *fmt) {
 
 /* Issue #414: Time#iso8601 — RFC 3339 style. Format the date+time
    prefix with strftime, then compute the UTC offset manually via
-   `mktime(gmtime(s)) - s` rather than relying on strftime's %z.
-   The original implementation used %z, which is POSIX-defined as
-   ±HHMM but Windows MSVCRT instead emits the timezone *name*
-   (e.g. "Coordinated Universal Time") — long, locale-sensitive,
-   and unsuitable for an iso8601 string. Computing the offset
-   from the gmtime/mktime difference gives the same answer on
-   every libc we target.
+   `mktime(gmtime(s)) - s` rather than relying on strftime's %z,
+   because MSVCRT's %z emits the timezone *name* rather than ±HHMM,
+   so a Windows-MinGW build of the same code produces 30+ char
+   strings like "...Coordinated Universal Time" instead of CRuby's
+   "...+09:00". Computing the offset from the gmtime/mktime
+   difference gives the same answer on every libc we target.
    Sub-second precision is intentionally omitted: CRuby's iso8601
    also drops it unless the caller passes a precision arg, which
-   Phase 1 doesn't support. */
+   Phase 1 doesn't support.
+   Issue #418: when is_utc is set, format against gmtime and emit the
+   trailing "Z" suffix CRuby uses for UTC iso8601. */
 static const char *sp_time_iso8601(sp_Time t) {
   char buf[64];
   time_t s = (time_t)t.tv_sec;
+  if (t.is_utc) {
+    struct tm *gt = gmtime(&s);
+    if (gt == NULL) return SPL("");
+    size_t n = strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", gt);
+    if (n == 0) return SPL("");
+    buf[n] = 0;
+    return sp_str_dup_external(buf);
+  }
   struct tm *lt = localtime(&s);
   if (lt == NULL) return SPL("");
   size_t n = strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", lt);
@@ -297,6 +313,15 @@ static const char *sp_time_iso8601(sp_Time t) {
   buf[n++] = (char)('0' + (om % 10));
   buf[n] = 0;
   return sp_str_dup_external(buf);
+}
+
+/* Issue #418: Time#utc — same instant, presentation flag flipped to
+   UTC. iso8601 / strftime check is_utc at format time. CRuby's Time
+   internally tracks a similar "gmt" flag; the value-typed sp_Time
+   stores it inline. */
+static inline sp_Time sp_time_utc(sp_Time t) {
+  t.is_utc = 1;
+  return t;
 }
 
 #define SP_GC_STACK_MAX 65536

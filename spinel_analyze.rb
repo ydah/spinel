@@ -3173,6 +3173,14 @@ class Compiler
         return "string"
       end
     end
+    # Issue #418: Time#utc — same instant with UTC presentation
+    # flag set. Returns a Time so chained calls (`Time.now.utc.iso8601`)
+    # type as the chained method's result.
+    if mname == "utc"
+      if recv >= 0 && infer_type(recv) == "time"
+        return "time"
+      end
+    end
     # Kernel coercion methods: Integer(x) / Float(x) return their class.
     # Only treat as a Kernel call when there's no explicit receiver — with
     # a receiver, "Integer" / "Float" would be ConstantReadNode lookups,
