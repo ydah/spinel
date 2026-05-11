@@ -6101,6 +6101,14 @@ class Compiler
     if @needs_poly_poly_hash == 1
       @needs_method = 1
     end
+    # Same shape for the class-hierarchy tables / helpers:
+    # @needs_class_parents / @needs_class_ancestors /
+    # @needs_class_for_poly are set by compile-side arms too
+    # late to land before emit_class_runtime emits the gated
+    # sections. Pre-scan covers .superclass / .ancestors /
+    # dynamic is_a? / class-const comparators / case-when on
+    # Class subjects.
+    scan_for_class_hierarchy_usage(@root_id)
     emit_sym_runtime
     emit_ffi_externs
     # Emit program-specific regexp patterns
@@ -6391,14 +6399,15 @@ class Compiler
     emit_raw("static mrb_bool sp_class_eq(sp_Class a, sp_Class b) __attribute__((unused));")
     emit_raw("static mrb_bool sp_class_eq(sp_Class a, sp_Class b){return a.cls_id == b.cls_id;}")
     # Issue #404 Phase 3: parents + flat ancestors tables.
-    # emit_class_runtime runs before compile_expr toggles the
-    # use-site flags, so we follow Phase 1/2's policy and emit
-    # unconditionally when any class exists. The helpers are
-    # `__attribute__((unused))` and the tables themselves get
-    # link-time DCE'd when nothing consumes them; the residual
-    # cost is the array bytes, which is small for typical
-    # programs and zero for programs that never declare a class.
-    if unified_class_count > 0
+    # Gated on the pre-scan flags (scan_for_class_hierarchy_usage
+    # in generate_code) so programs that never reach for
+    # .superclass / .ancestors / dynamic is_a? / case-when-on-Class
+    # don't pay for the tables + helpers. Programs that do use
+    # them keep the full emission unchanged. The basic
+    # sp_class_to_s + sp_class_names + sp_class_eq above stay
+    # always-emitted because sp_runtime.h's sp_poly_to_s
+    # forward-declares sp_class_to_s for its SP_TAG_CLASS arm.
+    if @needs_class_parents == 1 && unified_class_count > 0
       parents_line = "static const mrb_int sp_class_parents[" + unified_class_count.to_s + "] __attribute__((unused)) = {"
       # Built-in parents per the design doc table.
       bi_pl = 0
@@ -6440,11 +6449,11 @@ class Compiler
       parents_line = parents_line + "};"
       emit_raw(parents_line)
     end
-    if unified_class_count > 0
+    if @needs_class_parents == 1 && unified_class_count > 0
       emit_raw("static sp_Class sp_class_superclass(sp_Class c) __attribute__((unused));")
       emit_raw("static sp_Class sp_class_superclass(sp_Class c){if(c.cls_id<0||c.cls_id>=SP_CLASS_COUNT)return (sp_Class){-1};return (sp_Class){sp_class_parents[c.cls_id]};}")
     end
-    if unified_class_count > 0
+    if @needs_class_ancestors == 1 && unified_class_count > 0
       # Compute ancestors per class at codegen time (Ruby side),
       # emit as a flat array + per-class offset table. Lookup is
       # `sp_class_ancestors_flat[sp_class_ancestors_off[cid] ..
@@ -6507,6 +6516,8 @@ class Compiler
       emit_raw("static mrb_bool sp_class_lt(sp_Class child, sp_Class anc){if(child.cls_id==anc.cls_id)return FALSE;return sp_class_le(child,anc);}")
       emit_raw("static sp_PolyArray *sp_class_ancestors_arr(sp_Class c) __attribute__((unused));")
       emit_raw("static sp_PolyArray *sp_class_ancestors_arr(sp_Class c){sp_PolyArray*r=sp_PolyArray_new();if(c.cls_id<0||c.cls_id>=SP_CLASS_COUNT)return r;mrb_int s=sp_class_ancestors_off[c.cls_id];mrb_int e=sp_class_ancestors_off[c.cls_id+1];for(mrb_int k=s;k<e;k++){sp_Class el={sp_class_ancestors_flat[k]};sp_PolyArray_push(r,sp_box_class(el));}return r;}")
+    end
+    if @needs_class_for_poly == 1
       # Tier 4: recover the cls_id of a poly value. Each primitive
       # tag maps to the corresponding built-in cls_id (Integer=9,
       # Float=10, String=11, Symbol=12, NilClass=5, TrueClass=6,
@@ -9222,6 +9233,97 @@ class Compiler
     while k < cs.length
       scan_for_argv(cs[k])
       k = k + 1
+    end
+  end
+
+  # Walk the AST looking for class-hierarchy usage patterns
+  # (`<klass>.superclass`, `.ancestors`, `<`, `<=`, dynamic
+  # is_a? / kind_of? / instance_of?, case-when on a Class const).
+  # Flips @needs_class_parents / @needs_class_ancestors /
+  # @needs_class_for_poly so emit_class_runtime can gate the
+  # corresponding tables + helpers. The compile-side arms set
+  # the same flags but run after emit_class_runtime, so this
+  # scan is what makes the gate effective. Programs that never
+  # reach for hierarchy queries trim ~15 lines of tables +
+  # helpers from their .c (parents/ancestors arrays + le/lt/
+  # ancestors_arr/for_poly bodies).
+  def scan_for_class_hierarchy_usage(nid)
+    if nid < 0
+      return
+    end
+    if @needs_class_parents == 1 && @needs_class_ancestors == 1 && @needs_class_for_poly == 1
+      return
+    end
+    t_ch = @nd_type[nid]
+    if t_ch == "CallNode"
+      mname_ch = @nd_name[nid]
+      if mname_ch == "superclass"
+        @needs_class_parents = 1
+      end
+      if mname_ch == "ancestors"
+        @needs_class_ancestors = 1
+      end
+      if mname_ch == "is_a?" || mname_ch == "kind_of?" || mname_ch == "instance_of?"
+        args_id_ch = @nd_arguments[nid]
+        if args_id_ch >= 0
+          aa_ch = get_args(args_id_ch)
+          if aa_ch.length > 0
+            arg_t_ch = @nd_type[aa_ch[0]]
+            # Dynamic klass (non-Const recv) routes through
+            # sp_class_for_poly + sp_class_le at runtime.
+            if arg_t_ch != "ConstantReadNode" && arg_t_ch != "ConstantPathNode"
+              @needs_class_for_poly = 1
+              @needs_class_ancestors = 1
+            end
+          end
+        end
+      end
+      if mname_ch == "<" || mname_ch == "<=" || mname_ch == ">" || mname_ch == ">="
+        # Heuristic: ConstantReadNode / ConstantPathNode operand
+        # suggests class compare; numeric `<` etc. on locals
+        # doesn't trigger the hierarchy emit.
+        recv_ch = @nd_receiver[nid]
+        if recv_ch >= 0 && (@nd_type[recv_ch] == "ConstantReadNode" || @nd_type[recv_ch] == "ConstantPathNode")
+          @needs_class_ancestors = 1
+        end
+        args_id_ch2 = @nd_arguments[nid]
+        if args_id_ch2 >= 0
+          aa_ch2 = get_args(args_id_ch2)
+          if aa_ch2.length > 0 && (@nd_type[aa_ch2[0]] == "ConstantReadNode" || @nd_type[aa_ch2[0]] == "ConstantPathNode")
+            @needs_class_ancestors = 1
+          end
+        end
+      end
+    end
+    if t_ch == "CaseNode"
+      # case-when with a ConstantReadNode in a WhenNode arm could
+      # be `case obj when SomeClass` on a poly subject -- the
+      # codegen path routes through sp_class_le(sp_class_for_poly).
+      conds_ch = parse_id_list(@nd_conditions[nid])
+      kch = 0
+      while kch < conds_ch.length
+        wid_ch = conds_ch[kch]
+        if @nd_type[wid_ch] == "WhenNode"
+          wconds_ch = parse_id_list(@nd_conditions[wid_ch])
+          wkch = 0
+          while wkch < wconds_ch.length
+            wt_ch = @nd_type[wconds_ch[wkch]]
+            if wt_ch == "ConstantReadNode" || wt_ch == "ConstantPathNode"
+              @needs_class_for_poly = 1
+              @needs_class_ancestors = 1
+            end
+            wkch = wkch + 1
+          end
+        end
+        kch = kch + 1
+      end
+    end
+    cs_ch = []
+    push_child_ids(nid, cs_ch)
+    k_ch = 0
+    while k_ch < cs_ch.length
+      scan_for_class_hierarchy_usage(cs_ch[k_ch])
+      k_ch = k_ch + 1
     end
   end
 
