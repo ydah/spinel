@@ -6418,6 +6418,15 @@ class Compiler
       emit_raw("static mrb_bool sp_class_lt(sp_Class child, sp_Class anc){if(child.cls_id==anc.cls_id)return FALSE;return sp_class_le(child,anc);}")
       emit_raw("static sp_PolyArray *sp_class_ancestors_arr(sp_Class c) __attribute__((unused));")
       emit_raw("static sp_PolyArray *sp_class_ancestors_arr(sp_Class c){sp_PolyArray*r=sp_PolyArray_new();if(c.cls_id<0||c.cls_id>=SP_CLASS_COUNT)return r;mrb_int s=sp_class_ancestors_off[c.cls_id];mrb_int e=sp_class_ancestors_off[c.cls_id+1];for(mrb_int k=s;k<e;k++){sp_Class el={sp_class_ancestors_flat[k]};sp_PolyArray_push(r,sp_box_class(el));}return r;}")
+      # Tier 3: recover the cls_id of a poly value. SP_TAG_CLASS
+      # returns itself; SP_TAG_OBJ with a non-negative cls_id is a
+      # user-class instance; everything else (primitives, built-in
+      # pointer types) returns the sentinel sp_Class{-1} because
+      # primitives don't have user-class cls_ids in spinel's current
+      # numbering. Programs that need `5.is_a?(Integer)` continue to
+      # use the existing static tag-check path (poly_is_a_tag_check).
+      emit_raw("static sp_Class sp_class_for_poly(sp_RbVal v) __attribute__((unused));")
+      emit_raw("static sp_Class sp_class_for_poly(sp_RbVal v){if(v.tag==SP_TAG_CLASS)return (sp_Class){(mrb_int)v.cls_id};if(v.tag==SP_TAG_OBJ&&v.cls_id>=0)return (sp_Class){(mrb_int)v.cls_id};return (sp_Class){-1};}")
     end
     emit_raw("")
   end
@@ -16224,6 +16233,19 @@ class Compiler
         if args_id >= 0
           a = get_args(args_id)
           if a.length > 0
+            # Issue #404 Phase 3 Tier 3: dynamic Class arg. The
+            # statically-typed recv knows its own cls_id; the arg
+            # carries the target cls_id at runtime. sp_class_le walks
+            # the precomputed ancestors table to decide membership.
+            arg_t_404 = infer_type(a[0])
+            if arg_t_404 == "class" && @nd_type[a[0]] != "ConstantReadNode"
+              ci_404 = find_class_idx(cname)
+              if ci_404 >= 0
+                @needs_class_table = 1
+                @needs_class_ancestors = 1
+                return "sp_class_le((sp_Class){" + ci_404.to_s + "LL}, " + compile_expr(a[0]) + ")"
+              end
+            end
             arg0 = @nd_name[a[0]]
           end
         end
@@ -17010,6 +17032,22 @@ class Compiler
       if args_id >= 0
         a = get_args(args_id)
         if a.length > 0
+          # Issue #404 Phase 3 Tier 3: dynamic Class arg on a poly
+          # recv. Recover the recv's cls_id with sp_class_for_poly,
+          # then sp_class_le against the runtime-supplied Class.
+          # instance_of? still needs equality on the resolved
+          # cls_id; sp_class_eq handles that.
+          arg_t_404 = infer_type(a[0])
+          if arg_t_404 == "class" && @nd_type[a[0]] != "ConstantReadNode"
+            recv_tmp_404 = new_temp
+            emit("  sp_RbVal " + recv_tmp_404 + " = " + rc + ";")
+            @needs_class_table = 1
+            @needs_class_ancestors = 1
+            if mname == "instance_of?"
+              return "sp_class_eq(sp_class_for_poly(" + recv_tmp_404 + "), " + compile_expr(a[0]) + ")"
+            end
+            return "sp_class_le(sp_class_for_poly(" + recv_tmp_404 + "), " + compile_expr(a[0]) + ")"
+          end
           arg_name = @nd_name[a[0]]
           recv_tmp = new_temp
           emit("  sp_RbVal " + recv_tmp + " = " + rc + ";")
