@@ -17114,28 +17114,68 @@ class Compiler
                       op_422 = op_422 + 1
                     end
                   end
+                  inner_c_chain = compile_expr(inner_recv_419)
+                  tmp_chain = new_temp
+                  default_call_chain = "sp_" + owner_name_419 + "_cls_" + sanitize_name(mname) + "()"
                   if rt_ok_422 == 1
-                    inner_c_422 = compile_expr(inner_recv_419)
-                    tmp_422 = new_temp
-                    rt_c_422 = c_type(base_rt_422)
-                    default_call_422 = "sp_" + owner_name_419 + "_cls_" + sanitize_name(mname) + "()"
-                    emit("  " + rt_c_422 + " " + tmp_422 + " = " + default_call_422 + ";")
-                    emit("  switch (" + inner_c_422 + "->cls_id) {")
-                    op2_422 = 0
-                    while op2_422 < ovr_pairs_422.length
-                      pair2_422 = ovr_pairs_422[op2_422].split(",")
-                      cand_cid_422 = pair2_422[0].to_i
-                      cand_owner_422 = pair2_422[1].to_i
-                      cand_name_422 = @cls_names[cand_owner_422]
-                      cand_call_422 = "sp_" + cand_name_422 + "_cls_" + sanitize_name(mname) + "()"
+                    # Matching return types across base + descendants
+                    # (#422's canonical shape). Declare the temp with
+                    # the shared C type and put the base call in the
+                    # `default:` arm so a base-only implementation
+                    # that raises -- the Rails abstract-base pattern --
+                    # only fires when the runtime cls_id is the base
+                    # (or an unmodelled type), not on every dispatch.
+                    rt_c_chain = c_type(base_rt_422)
+                    emit("  " + rt_c_chain + " " + tmp_chain + " = " + c_default_val(base_rt_422) + ";")
+                    emit("  switch (" + inner_c_chain + "->cls_id) {")
+                    oi_chain = 0
+                    while oi_chain < ovr_pairs_422.length
+                      pair_chain = ovr_pairs_422[oi_chain].split(",")
+                      cand_cid_chain = pair_chain[0].to_i
+                      cand_owner_chain = pair_chain[1].to_i
+                      cand_name_chain = @cls_names[cand_owner_chain]
+                      cand_call_chain = "sp_" + cand_name_chain + "_cls_" + sanitize_name(mname) + "()"
                       # cls_id_for_user_internal converts the candidate
                       # internal index to the unified id that the
                       # constructor stamped into self->cls_id.
-                      emit("    case " + cls_id_for_user_internal(cand_cid_422).to_s + "LL: " + tmp_422 + " = " + cand_call_422 + "; break;")
-                      op2_422 = op2_422 + 1
+                      emit("    case " + cls_id_for_user_internal(cand_cid_chain).to_s + "LL: " + tmp_chain + " = " + cand_call_chain + "; break;")
+                      oi_chain = oi_chain + 1
                     end
+                    emit("    default: " + tmp_chain + " = " + default_call_chain + "; break;")
                     emit("  }")
-                    return tmp_422
+                    return tmp_chain
+                  else
+                    # Issue #431: candidate return types diverge -- the
+                    # canonical "abstract base raises, subclass returns
+                    # a concrete value" Rails pattern, plus the milder
+                    # "different concrete types per override". Box each
+                    # arm's return into sp_RbVal so the unified result
+                    # temp has a single C type, and route the base call
+                    # through the `default:` arm so a raise stub only
+                    # fires when the runtime cls_id genuinely lands on
+                    # the base. infer_type on the analyze side widens
+                    # the chain's return to "poly" so downstream
+                    # callers consume the boxed value through the
+                    # existing poly-dispatch machinery.
+                    @needs_rb_value = 1
+                    default_box_chain = box_value_to_poly(base_rt_422, default_call_chain)
+                    emit("  sp_RbVal " + tmp_chain + " = sp_box_nil();")
+                    emit("  switch (" + inner_c_chain + "->cls_id) {")
+                    oi_div = 0
+                    while oi_div < ovr_pairs_422.length
+                      pair_div = ovr_pairs_422[oi_div].split(",")
+                      cand_cid_div = pair_div[0].to_i
+                      cand_owner_div = pair_div[1].to_i
+                      cand_name_div = @cls_names[cand_owner_div]
+                      cand_rt_div = cls_cmeth_return_type(cand_owner_div, mname)
+                      cand_call_div = "sp_" + cand_name_div + "_cls_" + sanitize_name(mname) + "()"
+                      cand_box_div = box_value_to_poly(cand_rt_div, cand_call_div)
+                      emit("    case " + cls_id_for_user_internal(cand_cid_div).to_s + "LL: " + tmp_chain + " = " + cand_box_div + "; break;")
+                      oi_div = oi_div + 1
+                    end
+                    emit("    default: " + tmp_chain + " = " + default_box_chain + "; break;")
+                    emit("  }")
+                    return tmp_chain
                   end
                 end
                 if ca_419 == ""

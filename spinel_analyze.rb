@@ -1648,6 +1648,32 @@ class Compiler
   # `Base.all` (and emit `sp_Base_cls_all(...)`) when Leaf inherits
   # from Base without overriding `.all`. Mirrors cls_method_return's
   # parent walk for instance methods.
+  # Walks @cls_parents from `child` looking for `ancestor`.
+  # Mirrors codegen's `cls_is_descendant` so the analyze-side
+  # divergence check at the `<obj>.class.<m>` inference site
+  # can enumerate the recv's descendants without the helper
+  # being out of sync. (Codegen has its own copy with the same
+  # name; the two diverge only if one side is rebuilt while
+  # the other isn't -- the bootstrap fixpoint catches that.)
+  def cls_is_descendant(child, ancestor)
+    ck = child
+    while ck >= 0
+      pname = @cls_parents[ck]
+      if pname == ""
+        return 0
+      end
+      pi = find_class_idx(pname)
+      if pi < 0
+        return 0
+      end
+      if pi == ancestor
+        return 1
+      end
+      ck = pi
+    end
+    0
+  end
+
   def cls_cmethod_owner(ci, mname)
     if ci < 0
       return -1
@@ -3346,12 +3372,51 @@ class Compiler
             if owner_419 >= 0
               cmnames_419 = @cls_cmeth_names[owner_419].split(";")
               cmreturns_419 = @cls_cmeth_returns[owner_419].split(";")
+              base_rt_419 = ""
               cmidx_419 = 0
               while cmidx_419 < cmnames_419.length
                 if cmnames_419[cmidx_419] == mname && cmidx_419 < cmreturns_419.length
-                  return cmreturns_419[cmidx_419]
+                  base_rt_419 = cmreturns_419[cmidx_419]
+                  cmidx_419 = cmnames_419.length
+                else
+                  cmidx_419 = cmidx_419 + 1
                 end
-                cmidx_419 = cmidx_419 + 1
+              end
+              if base_rt_419 != ""
+                # Issue #431: when descendants of inner_ci override
+                # mname and any override's return type diverges from
+                # the base owner's, the codegen-side chained dispatch
+                # boxes each arm to sp_RbVal so the unified result
+                # temp has a single C type. Widen the inferred type
+                # to "poly" so consumers see the boxed value through
+                # the poly-dispatch machinery.
+                diverged_419 = 0
+                ck_419 = 0
+                while ck_419 < @cls_names.length
+                  if ck_419 != inner_ci_419 && cls_is_descendant(ck_419, inner_ci_419) == 1
+                    own_419 = cls_cmethod_owner(ck_419, mname)
+                    if own_419 == ck_419
+                      ck_cmnames = @cls_cmeth_names[ck_419].split(";")
+                      ck_cmreturns = @cls_cmeth_returns[ck_419].split(";")
+                      ki_419 = 0
+                      while ki_419 < ck_cmnames.length
+                        if ck_cmnames[ki_419] == mname && ki_419 < ck_cmreturns.length
+                          if ck_cmreturns[ki_419] != base_rt_419
+                            diverged_419 = 1
+                          end
+                          ki_419 = ck_cmnames.length
+                        else
+                          ki_419 = ki_419 + 1
+                        end
+                      end
+                    end
+                  end
+                  ck_419 = ck_419 + 1
+                end
+                if diverged_419 == 1
+                  return "poly"
+                end
+                return base_rt_419
               end
             end
           end
