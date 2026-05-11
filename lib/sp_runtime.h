@@ -908,6 +908,11 @@ typedef uint64_t sp_RbValue;
 #define SP_TAG_NIL  4
 #define SP_TAG_OBJ  5
 #define SP_TAG_SYM  6
+/* Issue #404 Phase 3: Class values boxed into a poly slot (e.g.
+   as ancestors-array elements). cls_id of the sp_RbVal carries
+   the boxed sp_Class's cls_id directly so unboxing is just a
+   field read. */
+#define SP_TAG_CLASS 7
 /* Negative cls_id values let SP_TAG_OBJ also carry built-in pointer
    types (IntArray, FloatArray, ...) — avoids minting a new SP_TAG_*
    per type. Non-negative cls_id stays an index into the user-class
@@ -941,6 +946,8 @@ static sp_RbVal sp_box_bool(mrb_bool v) { sp_RbVal r; r.tag = SP_TAG_BOOL; r.cls
 static sp_RbVal sp_box_nil(void) { sp_RbVal r; r.tag = SP_TAG_NIL; r.cls_id = 0; r.v.i = 0; return r; }
 static sp_RbVal sp_box_obj(void *p, int cls_id) { sp_RbVal r; r.tag = SP_TAG_OBJ; r.cls_id = cls_id; r.v.p = p; return r; }
 static sp_RbVal sp_box_sym(sp_sym v) { sp_RbVal r; r.tag = SP_TAG_SYM; r.cls_id = 0; r.v.i = (mrb_int)v; return r; }
+/* Issue #404 Phase 3: box a sp_Class into a poly slot. */
+static sp_RbVal sp_box_class(sp_Class c) { sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = (int)c.cls_id; r.v.i = c.cls_id; return r; }
 static sp_RbVal sp_box_nullable_str(const char *v) { return v ? sp_box_str(v) : sp_box_nil(); }
 static sp_RbVal sp_box_nullable_obj(void *p, int cls_id) { return p ? sp_box_obj(p, cls_id) : sp_box_nil(); }
 /* Built-in pointer boxes — share SP_TAG_OBJ with a reserved negative
@@ -1021,6 +1028,11 @@ static void sp_poly_puts(sp_RbVal v) {
 }
 static mrb_bool sp_poly_nil_p(sp_RbVal v) { return v.tag == SP_TAG_NIL; }
 static mrb_bool sp_poly_truthy(sp_RbVal v) { return !(v.tag == SP_TAG_NIL || (v.tag == SP_TAG_BOOL && !v.v.b)); }
+/* Issue #404 Phase 3: forward-declare the program-emitted class
+   name lookup so sp_poly_to_s's SP_TAG_CLASS arm resolves. The
+   codegen emits sp_class_to_s unconditionally (even for programs
+   with no user classes), so the link is always satisfied. */
+static const char *sp_class_to_s(sp_Class c);
 static const char *sp_poly_to_s(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_INT: return sp_int_to_s(v.v.i);
@@ -1029,6 +1041,7 @@ static const char *sp_poly_to_s(sp_RbVal v) {
     case SP_TAG_BOOL: return v.v.b ? SPL("true") : SPL("false");
     case SP_TAG_NIL: return sp_str_empty;
     case SP_TAG_SYM: return sp_sym_to_s((sp_sym)v.v.i);
+    case SP_TAG_CLASS: { sp_Class c = {v.v.i}; return sp_class_to_s(c); }
     case SP_TAG_OBJ:
       switch (v.cls_id) {
         case SP_BUILTIN_INT_ARRAY: return sp_IntArray_inspect((sp_IntArray *)v.v.p);

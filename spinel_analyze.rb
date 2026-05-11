@@ -3165,6 +3165,25 @@ class Compiler
         return "string"
       end
     end
+    # Issue #404 Phase 3: hierarchy queries on a Class value.
+    #   .superclass  -> class (the parent or sp_Class{-1})
+    #   .ancestors   -> poly_array of boxed sp_Class
+    #   <, <=, >, >=  -> bool
+    if mname == "superclass"
+      if recv >= 0 && infer_type(recv) == "class"
+        return "class"
+      end
+    end
+    if mname == "ancestors"
+      if recv >= 0 && infer_type(recv) == "class"
+        return "poly_array"
+      end
+    end
+    if mname == "<" || mname == "<=" || mname == ">" || mname == ">="
+      if recv >= 0 && infer_type(recv) == "class"
+        return "bool"
+      end
+    end
     if mname == "to_i"
       return "int"
     end

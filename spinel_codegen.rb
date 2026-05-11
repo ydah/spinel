@@ -156,6 +156,12 @@ class Compiler
     # ever fires, we elide the table to keep the small-program emit
     # tight.
     @needs_class_table = 0
+    # Issue #404 Phase 3: parents / ancestors tables are emitted
+    # only when something reaches for them (.superclass, .ancestors,
+    # `<` / `<=`, dynamic is_a?, case-when on Class). The base
+    # @needs_class_table covers the names table; these extend it.
+    @needs_class_parents = 0
+    @needs_class_ancestors = 0
     @cls_ivar_names = "".split(",")
     @cls_ivar_types = "".split(",")
     # Per-ivar flag: was the ivar's first scanned write a definite
@@ -6261,12 +6267,19 @@ class Compiler
   # array (~one cache line for typical small programs, ~1KB at
   # spinel_codegen scale).
   def emit_class_runtime
-    if @cls_names.length == 0
-      return
-    end
+    # Issue #404 Phase 3: always emit the names table + sp_class_to_s,
+    # even when no user class is declared. sp_runtime.h's sp_poly_to_s
+    # has a SP_TAG_CLASS arm that forward-declares sp_class_to_s; an
+    # empty TU would otherwise leave that reference unresolved. A
+    # sentinel 1-slot array carries the empty case (ISO C forbids
+    # zero-length array initializers).
     emit_raw("/* sp_Class names table (issue #404) */")
     emit_raw("#define SP_CLASS_COUNT " + @cls_names.length.to_s)
-    line = "static const char *const sp_class_names[" + @cls_names.length.to_s + "] = {"
+    arr_len = @cls_names.length
+    if arr_len == 0
+      arr_len = 1
+    end
+    line = "static const char *const sp_class_names[" + arr_len.to_s + "] = {"
     i = 0
     while i < @cls_names.length
       if i > 0
@@ -6274,6 +6287,9 @@ class Compiler
       end
       line = line + c_string_literal(@cls_names[i])
       i = i + 1
+    end
+    if @cls_names.length == 0
+      line = line + "\"\""
     end
     line = line + "};"
     emit_raw(line)
@@ -6284,7 +6300,135 @@ class Compiler
     # a single-int wrapper -- a direct field compare is enough.
     emit_raw("static mrb_bool sp_class_eq(sp_Class a, sp_Class b) __attribute__((unused));")
     emit_raw("static mrb_bool sp_class_eq(sp_Class a, sp_Class b){return a.cls_id == b.cls_id;}")
+    # Issue #404 Phase 3: parents + flat ancestors tables.
+    # emit_class_runtime runs before compile_expr toggles the
+    # use-site flags, so we follow Phase 1/2's policy and emit
+    # unconditionally when any class exists. The helpers are
+    # `__attribute__((unused))` and the tables themselves get
+    # link-time DCE'd when nothing consumes them; the residual
+    # cost is the array bytes, which is small for typical
+    # programs and zero for programs that never declare a class.
+    if @cls_names.length > 0
+      parents_line = "static const mrb_int sp_class_parents[" + @cls_names.length.to_s + "] __attribute__((unused)) = {"
+      pi_pl = 0
+      while pi_pl < @cls_names.length
+        if pi_pl > 0
+          parents_line = parents_line + ","
+        end
+        ppname = @cls_parents[pi_pl]
+        ppidx = -1
+        if ppname != ""
+          ppidx = find_class_idx(ppname)
+        end
+        parents_line = parents_line + ppidx.to_s + "LL"
+        pi_pl = pi_pl + 1
+      end
+      parents_line = parents_line + "};"
+      emit_raw(parents_line)
+    end
+    if @cls_names.length > 0
+      emit_raw("static sp_Class sp_class_superclass(sp_Class c) __attribute__((unused));")
+      emit_raw("static sp_Class sp_class_superclass(sp_Class c){if(c.cls_id<0||c.cls_id>=SP_CLASS_COUNT)return (sp_Class){-1};return (sp_Class){sp_class_parents[c.cls_id]};}")
+    end
+    if @cls_names.length > 0
+      # Compute ancestors per class at codegen time (Ruby side),
+      # emit as a flat array + per-class offset table. Lookup is
+      # `sp_class_ancestors_flat[sp_class_ancestors_off[cid] ..
+      # sp_class_ancestors_off[cid+1]]`. Matches the Ruby MRO:
+      # class includes (reverse order) interleave between the
+      # class and its parent chain.
+      off = []
+      flat = []
+      ai = 0
+      while ai < @cls_names.length
+        off.push(flat.length)
+        acc = compute_ancestors_for_class(ai)
+        aj = 0
+        while aj < acc.length
+          flat.push(acc[aj])
+          aj = aj + 1
+        end
+        ai = ai + 1
+      end
+      off.push(flat.length)
+      off_line = "static const mrb_int sp_class_ancestors_off[" + (@cls_names.length + 1).to_s + "] __attribute__((unused)) = {"
+      oi = 0
+      while oi < off.length
+        if oi > 0
+          off_line = off_line + ","
+        end
+        off_line = off_line + off[oi].to_s + "LL"
+        oi = oi + 1
+      end
+      off_line = off_line + "};"
+      emit_raw(off_line)
+      # Even an empty flat array would be valid as a C declaration
+      # with [0], but ISO C forbids zero-length brace-enclosed
+      # initializers in some compilers' stricter modes; guard with
+      # a 1-slot sentinel when @cls_names happens to be empty (the
+      # outer `@cls_names.length == 0` early return makes this dead
+      # in practice, but keep the emit defensible).
+      flat_n = flat.length
+      if flat_n == 0
+        flat_n = 1
+      end
+      flat_line = "static const mrb_int sp_class_ancestors_flat[" + flat_n.to_s + "] __attribute__((unused)) = {"
+      fi = 0
+      while fi < flat.length
+        if fi > 0
+          flat_line = flat_line + ","
+        end
+        flat_line = flat_line + flat[fi].to_s + "LL"
+        fi = fi + 1
+      end
+      if flat.length == 0
+        flat_line = flat_line + "-1LL"
+      end
+      flat_line = flat_line + "};"
+      emit_raw(flat_line)
+      emit_raw("static mrb_bool sp_class_le(sp_Class child, sp_Class anc) __attribute__((unused));")
+      emit_raw("static mrb_bool sp_class_le(sp_Class child, sp_Class anc){if(child.cls_id<0||child.cls_id>=SP_CLASS_COUNT)return FALSE;mrb_int s=sp_class_ancestors_off[child.cls_id];mrb_int e=sp_class_ancestors_off[child.cls_id+1];for(mrb_int k=s;k<e;k++){if(sp_class_ancestors_flat[k]==anc.cls_id)return TRUE;}return FALSE;}")
+      emit_raw("static mrb_bool sp_class_lt(sp_Class child, sp_Class anc) __attribute__((unused));")
+      emit_raw("static mrb_bool sp_class_lt(sp_Class child, sp_Class anc){if(child.cls_id==anc.cls_id)return FALSE;return sp_class_le(child,anc);}")
+      emit_raw("static sp_PolyArray *sp_class_ancestors_arr(sp_Class c) __attribute__((unused));")
+      emit_raw("static sp_PolyArray *sp_class_ancestors_arr(sp_Class c){sp_PolyArray*r=sp_PolyArray_new();if(c.cls_id<0||c.cls_id>=SP_CLASS_COUNT)return r;mrb_int s=sp_class_ancestors_off[c.cls_id];mrb_int e=sp_class_ancestors_off[c.cls_id+1];for(mrb_int k=s;k<e;k++){sp_Class el={sp_class_ancestors_flat[k]};sp_PolyArray_push(r,sp_box_class(el));}return r;}")
+    end
     emit_raw("")
+  end
+
+  # Issue #404 Phase 3: compute the class's ancestors list at
+  # codegen time. Returns an array of cls_ids in MRO order:
+  # [self, ...parent ancestors]. Modules in @cls_names are not
+  # yet distinguished from classes here -- the Tier 1 scope
+  # walks parent chains only; module-include integration comes
+  # with the @cls_kinds + @cls_includes follow-up.
+  def compute_ancestors_for_class(ci)
+    acc = []
+    cur = ci
+    while cur >= 0
+      already = 0
+      ck = 0
+      while ck < acc.length
+        if acc[ck] == cur
+          already = 1
+          ck = acc.length
+        else
+          ck = ck + 1
+        end
+      end
+      if already == 1
+        cur = -1
+      else
+        acc.push(cur)
+        pname = @cls_parents[cur]
+        if pname == ""
+          cur = -1
+        else
+          cur = find_class_idx(pname)
+        end
+      end
+    end
+    acc
   end
 
   def emit_sym_runtime
@@ -12257,6 +12401,14 @@ class Compiler
         end
         return "(strcmp(" + compile_expr(recv) + ", " + compile_arg0(nid) + ") < 0)"
       end
+      # Issue #404 Phase 3: sp_Class < sp_Class -- proper-subclass
+      # check via the ancestors table. Plain `<` on the struct
+      # type isn't a valid C operator.
+      if lt == "class"
+        @needs_class_table = 1
+        @needs_class_ancestors = 1
+        return "sp_class_lt(" + compile_expr(recv) + ", " + compile_arg0(nid) + ")"
+      end
       return "(" + compile_expr(recv) + " < " + compile_arg0(nid) + ")"
     end
     if mname == ">"
@@ -12273,6 +12425,11 @@ class Compiler
           return cc
         end
         return "(strcmp(" + compile_expr(recv) + ", " + compile_arg0(nid) + ") > 0)"
+      end
+      if lt == "class"
+        @needs_class_table = 1
+        @needs_class_ancestors = 1
+        return "sp_class_lt(" + compile_arg0(nid) + ", " + compile_expr(recv) + ")"
       end
       return "(" + compile_expr(recv) + " > " + compile_arg0(nid) + ")"
     end
@@ -12291,6 +12448,11 @@ class Compiler
         end
         return "(strcmp(" + compile_expr(recv) + ", " + compile_arg0(nid) + ") <= 0)"
       end
+      if lt == "class"
+        @needs_class_table = 1
+        @needs_class_ancestors = 1
+        return "sp_class_le(" + compile_expr(recv) + ", " + compile_arg0(nid) + ")"
+      end
       return "(" + compile_expr(recv) + " <= " + compile_arg0(nid) + ")"
     end
     if mname == ">="
@@ -12307,6 +12469,11 @@ class Compiler
           return cc
         end
         return "(strcmp(" + compile_expr(recv) + ", " + compile_arg0(nid) + ") >= 0)"
+      end
+      if lt == "class"
+        @needs_class_table = 1
+        @needs_class_ancestors = 1
+        return "sp_class_le(" + compile_arg0(nid) + ", " + compile_expr(recv) + ")"
       end
       return "(" + compile_expr(recv) + " >= " + compile_arg0(nid) + ")"
     end
@@ -16064,6 +16231,42 @@ class Compiler
       if mname == "!="
         rhs_419ne = compile_arg0(nid)
         return "(!sp_class_eq(" + rc + ", " + rhs_419ne + "))"
+      end
+      # Issue #404 Phase 3: class hierarchy queries.
+      #   .superclass  -> sp_class_superclass(c)  (returns sp_Class{-1} for root)
+      #   .ancestors   -> sp_class_ancestors_arr(c)  (returns sp_PolyArray of boxed sp_Class)
+      #   <, <=        -> sp_class_lt / sp_class_le  (proper / non-proper subclass)
+      #   >, >=        -> reversed args of the above.
+      if mname == "superclass"
+        @needs_class_table = 1
+        @needs_class_parents = 1
+        return "sp_class_superclass(" + rc + ")"
+      end
+      if mname == "ancestors"
+        @needs_class_table = 1
+        @needs_class_ancestors = 1
+        @needs_rb_value = 1
+        return "sp_class_ancestors_arr(" + rc + ")"
+      end
+      if mname == "<"
+        @needs_class_table = 1
+        @needs_class_ancestors = 1
+        return "sp_class_lt(" + rc + ", " + compile_arg0(nid) + ")"
+      end
+      if mname == "<="
+        @needs_class_table = 1
+        @needs_class_ancestors = 1
+        return "sp_class_le(" + rc + ", " + compile_arg0(nid) + ")"
+      end
+      if mname == ">"
+        @needs_class_table = 1
+        @needs_class_ancestors = 1
+        return "sp_class_lt(" + compile_arg0(nid) + ", " + rc + ")"
+      end
+      if mname == ">="
+        @needs_class_table = 1
+        @needs_class_ancestors = 1
+        return "sp_class_le(" + compile_arg0(nid) + ", " + rc + ")"
       end
       # Issue #419: `<obj>.class.<cmeth>(...)` lowering. The recv
       # here is itself a `<X>.class` CallNode -- the outer
