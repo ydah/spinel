@@ -20310,6 +20310,26 @@ class Compiler
       recv_t = infer_type(recv)
     end
     if mname == "each" || mname == "map" || mname == "flat_map" || mname == "filter" || mname == "select" || mname == "reject" || mname == "find" || mname == "detect" || mname == "find_index" || mname == "find_all" || mname == "count" || mname == "all?" || mname == "any?" || mname == "none?" || mname == "min_by" || mname == "max_by" || mname == "sort_by" || mname == "group_by" || mname == "partition" || mname == "uniq" || mname == "tally" || mname == "drop_while" || mname == "take_while" || mname == "filter_map"
+ # Hash#each yields |k, v|. elem_type_of_array on a hash type
+ # falls back to "int" for both, which then types `puts k + ":"`
+ # inside the block as int-arithmetic and lowers to printf("%lld")
+ # with a raw `+` between pointers. Pick the hash's key/value
+ # part directly so block_param_type_at returns the right per-
+ # position type. hash_key_part/hash_value_part return the
+ # short ("str"/"sym"/"int") tags; expand to full type names.
+      if is_hash_type(recv_t) == 1
+        if pi == 0
+          kp = hash_key_part(recv_t)
+          return "string" if kp == "str"
+          return "symbol" if kp == "sym"
+          return "int" if kp == "int"
+          return "poly"
+        end
+        vp = hash_value_part(recv_t)
+        return "string" if vp == "str"
+        return "int" if vp == "int"
+        return "poly"
+      end
       return elem_type_of_array(recv_t)
     end
     if mname == "each_with_index"

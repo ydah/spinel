@@ -2506,6 +2506,29 @@ class Compiler
       if cmp_mname == "<" || cmp_mname == ">" || cmp_mname == "<=" || cmp_mname == ">=" || cmp_mname == "==" || cmp_mname == "!=" || cmp_mname == "===" || cmp_mname == "eql?" || cmp_mname == "equal?" || cmp_mname == "is_a?" || cmp_mname == "kind_of?" || cmp_mname == "instance_of?" || cmp_mname == "respond_to?" || cmp_mname == "include?" || cmp_mname == "start_with?" || cmp_mname == "end_with?" || cmp_mname == "match?" || cmp_mname == "empty?" || cmp_mname == "nil?" || cmp_mname == "zero?" || cmp_mname == "even?" || cmp_mname == "odd?" || cmp_mname == "frozen?"
         return "bool"
       end
+ # `+` on string recv returns string — walk_and_cache skips
+ # block bodies of `each`-family / proc / lambda, so a chained
+ # concat like `puts k + ": " + v.to_s` inside a hash `.each do
+ # |k, v|` block hits this cache-miss path. Without this arm
+ # infer_type fell back to the "int" default below, the inner
+ # `k + ": "` got typed as int, and `puts` lowered to
+ # `printf("%lld", (long long)(string_call + int_call))` — both
+ # the cast and the raw `+` between pointers fail C compile.
+      if cmp_mname == "+"
+        cm_recv = @nd_receiver[nid]
+        if cm_recv >= 0
+          cm_rt = infer_type(cm_recv)
+          if cm_rt == "string" || cm_rt == "mutable_str"
+            return "string"
+          end
+        end
+      end
+ # `.to_s` returns string regardless of recv (the only exception
+ # is `obj.to_s` falling through to a user-defined `to_s` that
+ # returned something else — rare; the cache covers that case).
+      if cmp_mname == "to_s"
+        return "string"
+      end
  # `lv.call(...)` / `lv.()` on a lambda local — recover the
  # lambda's recorded return type from @lambda_var_ret_*.
  # walk_and_cache skips lambda bodies, so the call itself isn't
