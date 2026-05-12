@@ -12593,7 +12593,7 @@ class Compiler
           synth = owning + "_cls_" + mname
           mi = find_method_idx(synth)
           if mi >= 0
-            ca_m = compile_call_args(nid)
+            ca_m = compile_call_args_with_defaults(nid, mi)
             if ca_m == ""
               return "sp_" + sanitize_name(synth) + "()"
             end
