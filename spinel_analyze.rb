@@ -17713,6 +17713,23 @@ class Compiler
                   end
                   ki = ki + 1
                 end
+              elsif is_hash_type(arg_type) == 1 || is_array_type(arg_type) == 1 || is_ptr_array_type(arg_type) == 1
+ # Hash or typed-array element: spinel has no
+ # <hash>_ptr_array / <array>_ptr_array_ptr_array slot,
+ # so box each push via poly_array. Mirrors the literal-
+ # array inference shape at infer_array_elem_type_from_ids
+ # (line 2400+ / 2414+).
+                @needs_rb_value = 1
+                @needs_gc = 1
+                ki = 0
+                while ki < names.length
+                  if names[ki] == arr_name
+                    if types[ki] == "int_array"
+                      types[ki] = "poly_array"
+                    end
+                  end
+                  ki = ki + 1
+                end
               end
             end
           end
