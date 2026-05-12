@@ -20143,6 +20143,19 @@ class Compiler
               ltypes[k] = lt[j]
               set_var_type(lnames[k], lt[j])
             end
+ # When pass 0 saw an unresolved key expression (e.g. `parts[0]`
+ # where parts wasn't declared yet) and produced `int_str_hash`
+ # from `kt=int + vt=string`, but pass 1 with parts declared
+ # correctly resolves the key as string (str_str_hash) or
+ # symbol (sym_str_hash), promote the local to the better
+ # variant. Symmetric to the str_int_hash → str_str_hash rule
+ # above; without it the hash stays pinned at int_str_hash and
+ # the call site emits `sp_IntStrHash_set(h, const char *, ...)`
+ # with a -Wint-conversion error.
+            if ltypes[k] == "int_str_hash" && (lt[j] == "str_str_hash" || lt[j] == "sym_str_hash" || lt[j] == "str_int_hash" || lt[j] == "sym_int_hash")
+              ltypes[k] = lt[j]
+              set_var_type(lnames[k], lt[j])
+            end
             if is_tuple_type(lt[j]) == 1 && is_tuple_type(ltypes[k]) == 0
               ltypes[k] = lt[j]
               set_var_type(lnames[k], lt[j])
@@ -20420,6 +20433,15 @@ class Compiler
                 (ltypes2[j] == "str_array" || ltypes2[j] == "float_array" ||
                  ltypes2[j] == "sym_array" || is_ptr_array_type(ltypes2[j]) == 1 ||
                  ltypes2[j] == "poly_array")
+            ltypes[k] = ltypes2[j]
+            set_var_type(lnames[k], ltypes2[j])
+ # Pass 1 picked int_str_hash from an unresolved key
+ # expression (`kt=int + vt=string` via the analyzer
+ # fallback for an undeclared local). Pass 2 with the key
+ # resolved as string (or symbol) corrects to str_str_hash /
+ # sym_str_hash. Mirrors the str_int_hash → str_str_hash
+ # widening rule in refine_locals_multi_pass_full.
+          elsif ltypes[k] == "int_str_hash" && (ltypes2[j] == "str_str_hash" || ltypes2[j] == "sym_str_hash" || ltypes2[j] == "str_int_hash" || ltypes2[j] == "sym_int_hash")
             ltypes[k] = ltypes2[j]
             set_var_type(lnames[k], ltypes2[j])
           end

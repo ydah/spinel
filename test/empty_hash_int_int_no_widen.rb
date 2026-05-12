@@ -1,20 +1,30 @@
 # `h = {}; h[parts[0]] = v` where `parts` comes from a `split` result
-# (or any expression that returns str_array). Pre-fix the first-pass
-# scan_locals saw `parts` undeclared and inferred `parts[0]` as int,
-# then `promote_empty_hash_for("int", "int")` widened `h` to
-# `poly_poly_hash` — destructive: a later pass that correctly
-# resolves the key as string couldn't downgrade `h` back.
+# (or any expression that returns str_array). Two pre-fix shapes
+# combined:
 #
-# Now kt="int" with vt="int"/"bool"/"nil" returns "" (defer) so the
-# second pass with the key resolved produces str_int_hash.
+# 1. kt="int" + vt="int" — pass-0 promote_empty_hash_for widened to
+#    poly_poly_hash via the catch-all. Now defers (returns "") so the
+#    second pass with the key resolved as string produces
+#    str_int_hash.
+# 2. kt="int" + vt="string" — pass-0 promoted to int_str_hash, and
+#    the refine_locals merge had no rule to upgrade int_str_hash to
+#    str_str_hash when pass 1 resolved the key as string. Added
+#    int_str_hash → str_str_hash / sym_str_hash widening rules.
 #
-# Sibling check: kt="int" with vt="string" still gives int_str_hash
-# (the legitimate int-keyed-string-valued case stays intact).
+# Sibling check: a literal-keyed `h = {}; h[200] = "OK"` (legitimate
+# int-keyed-string-valued) keeps int_str_hash.
 
-def build_str_keyed(s)
+def build_str_keyed_int_val(s)
   parts = s.split("/")
   h = {}
   h[parts[0]] = 1
+  h
+end
+
+def build_str_keyed_str_val(s)
+  parts = s.split("/")
+  h = {}
+  h[parts[0]] = "v"
   h
 end
 
@@ -25,8 +35,11 @@ def build_int_keyed
   h
 end
 
-h1 = build_str_keyed("a/b")
+h1 = build_str_keyed_int_val("a/b")
 puts h1["a"]            # 1
+
+h1b = build_str_keyed_str_val("a/b")
+puts h1b["a"]           # v
 
 h2 = build_int_keyed
 puts h2[200]            # OK
