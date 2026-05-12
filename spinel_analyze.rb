@@ -10844,6 +10844,135 @@ class Compiler
     end
   end
 
+ # Methods that exist on String but not on any user-overrideable
+ # receiver, and not on the container builtins. A body that calls
+ # one of these on a param is strong evidence the param is a
+ # String. Used by infer_string_param_from_body to lift "int"
+ # default ptypes to "string" when the body's only user signal is
+ # a String-specific receiver method (#450 cascade 2:
+ # `def match(method, path, table); ...; path.split("/"); end`
+ # left `path` typed mrb_int because called_methods_only_on_
+ # container_builtins filtered `split` out and no user class was
+ # a perfect fit).
+  def is_string_only_method(mname)
+    if mname == "split" || mname == "start_with?" || mname == "end_with?"
+      return 1
+    end
+    if mname == "chomp" || mname == "chop" || mname == "strip" || mname == "lstrip" || mname == "rstrip"
+      return 1
+    end
+    if mname == "upcase" || mname == "downcase" || mname == "swapcase" || mname == "capitalize"
+      return 1
+    end
+    if mname == "tr" || mname == "gsub" || mname == "sub" || mname == "scan" || mname == "match" || mname == "match?"
+      return 1
+    end
+    if mname == "ljust" || mname == "rjust" || mname == "center"
+      return 1
+    end
+    if mname == "bytes" || mname == "bytesize" || mname == "chars" || mname == "lines" || mname == "codepoints"
+      return 1
+    end
+    if mname == "encode" || mname == "force_encoding" || mname == "encoding"
+      return 1
+    end
+    if mname == "concat" || mname == "ascii_only?"
+      return 1
+    end
+    0
+  end
+
+ # Walk every method body. If a param is still typed "int" (the
+ # placeholder default) and the body calls at least one
+ # String-specific method on it, promote to "string". Mirrors
+ # infer_cls_meth_param_from_body's class-promotion shape, but
+ # specialised for the String case where the canonical receiver
+ # is the primitive rather than a user class.
+  def infer_string_param_from_body
+    mi = 0
+    while mi < @meth_names.length
+      bid = @meth_body_ids[mi]
+      if bid >= 0
+        pnames = @meth_param_names[mi].split(",")
+        ptypes = @meth_param_types[mi].split(",")
+        changed_top = 0
+        pk = 0
+        while pk < pnames.length
+          if pk < ptypes.length && ptypes[pk] == "int"
+            called = "".split(",")
+            collect_param_methods(bid, pnames[pk], called)
+            sawk = 0
+            kk = 0
+            while kk < called.length
+              if is_string_only_method(called[kk]) == 1
+                sawk = 1
+              end
+              kk = kk + 1
+            end
+            if sawk == 1
+              ptypes[pk] = "string"
+              changed_top = 1
+            end
+          end
+          pk = pk + 1
+        end
+        if changed_top == 1
+          @meth_param_types[mi] = ptypes.join(",")
+        end
+      end
+      mi = mi + 1
+    end
+    ci = 0
+    while ci < @cls_names.length
+      mnames = @cls_meth_names[ci].split(";")
+      bodies = @cls_meth_bodies[ci].split(";")
+      cls_changed = 0
+      mj = 0
+      while mj < mnames.length
+        if mnames[mj] != "initialize"
+          pnames_j = cls_meth_pnames_get(ci, mj)
+          ptypes_j = cls_meth_ptypes_get(ci, mj)
+          bid_j = -1
+          if mj < bodies.length
+            bid_j = bodies[mj].to_i
+          end
+          if bid_j >= 0
+            m_changed = 0
+            pk = 0
+            while pk < pnames_j.length
+              if pk < ptypes_j.length && ptypes_j[pk] == "int"
+                called_c = "".split(",")
+                collect_param_methods(bid_j, pnames_j[pk], called_c)
+                sawc = 0
+                kk = 0
+                while kk < called_c.length
+                  if is_string_only_method(called_c[kk]) == 1
+                    sawc = 1
+                  end
+                  kk = kk + 1
+                end
+                if sawc == 1
+                  ptypes_j[pk] = "string"
+                  m_changed = 1
+                end
+              end
+              pk = pk + 1
+            end
+            if m_changed == 1
+              cls_meth_ptypes_put(ci, mj, ptypes_j)
+              cls_changed = 1
+            end
+          end
+        end
+        mj = mj + 1
+      end
+      if cls_changed == 1
+        @cls_meth_ptypes_version = @cls_meth_ptypes_version + 1
+      end
+      ci = ci + 1
+    end
+  end
+
  # Widen each method's stored parameter types to encompass any
  # in-body reassignments to the parameter name. Without this,
  # a body shape like
@@ -15368,6 +15497,7 @@ class Compiler
       infer_ivar_types_from_writers
       infer_param_array_type_from_body
       narrow_param_types_from_body_method_calls
+      infer_string_param_from_body
       narrow_param_hash_types_from_body_writes
  # propagate hash-each block-arg types into
  # nested cmeth/method-call param widening. Runs inside
