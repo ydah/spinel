@@ -5048,6 +5048,13 @@ class Compiler
     end
     val = compile_expr(nid)
     at = infer_type(nid)
+ # Override `at` to "poly" when the nid's actual C emit is
+ # sp_RbVal even though the cached static type was a narrower
+ # default (the nullable-poly_hash `[]` shape — see
+ # expr_emits_poly_rb_val for the failure mode).
+    if at != "poly" && expr_emits_poly_rb_val(nid) == 1
+      at = "poly"
+    end
  # `if v.is_a?(String); helper(v); end` (and analogues for int /
  # float / sym / obj) — `v`'s C storage is sp_RbVal but the
  # callee's param expects an unboxed concrete type. The user-level
@@ -17616,6 +17623,30 @@ class Compiler
     "poly"
   end
 
+ # `nullable_poly_hash[k]` — recv's static type carries `?` (a
+ # `if recv.nil?; return; end` upstream doesn't strip the suffix),
+ # so analyze's [] dispatch falls through to the int default in
+ # its cache. The actual emit is sp_<*PolyHash>_get(...) returning
+ # sp_RbVal, so the cached "int" diverges from the C temp type and
+ # the caller's int-typed param then receives an sp_RbVal unboxed.
+ # Detect the shape here so compile_expr_for_expected_type and the
+ # poly-dispatch arm can do the unbox even when cached "at" lied.
+  def expr_emits_poly_rb_val(nid)
+    if @nd_type[nid] != "CallNode" || @nd_name[nid] != "[]"
+      return 0
+    end
+    recv_id = @nd_receiver[nid]
+    if recv_id < 0
+      return 0
+    end
+    rt = infer_type(recv_id)
+    bt = base_type(rt)
+    if bt == "sym_poly_hash" || bt == "str_poly_hash" || bt == "poly_poly_hash"
+      return 1
+    end
+    0
+  end
+
  # whenever the chain doesn't fit the pattern, so the default
  # poly-typed temp is preserved for everything else.
   def poly_index_narrow_int(nid)
@@ -18035,6 +18066,7 @@ class Compiler
  # branch below can unbox a poly arg without re-walking the AST.
     arg_compiled = "".split(",")
     arg_types = "".split(",")
+    aargs_for_unbox = []
     arg_strs = ""
     args_id = @nd_arguments[nid]
     if args_id >= 0
@@ -18044,6 +18076,7 @@ class Compiler
         ce = compile_expr(aargs[k])
         arg_compiled.push(ce)
         arg_types.push(infer_type(aargs[k]))
+        aargs_for_unbox.push(aargs[k])
         arg_strs = arg_strs + ", " + ce
         k = k + 1
       end
@@ -18125,6 +18158,29 @@ class Compiler
  # downstream; this only does the boxing direction.
             arg_v = arg_compiled[pk]
             arm_pt_base = base_type(arm_ptypes[pk])
+ # Inverse direction: this arm expects a concrete primitive
+ # but the call site supplied a value whose actual C type
+ # is sp_RbVal (analyze's cached `at` lagged the emit -- see
+ # expr_emits_poly_rb_val). Unbox via the matching union
+ # field. Mirrors compile_expr_for_expected_type's poly→prim.
+            if pk < aargs_for_unbox.length && expr_emits_poly_rb_val(aargs_for_unbox[pk]) == 1
+              if arm_pt_base == "int" || arm_pt_base == "symbol"
+                @needs_rb_value = 1
+                arg_v = "(" + arg_v + ").v.i"
+                if arm_pt_base == "symbol"
+                  arg_v = "(sp_sym)" + arg_v
+                end
+              elsif arm_pt_base == "string" || arm_pt_base == "mutable_str"
+                @needs_rb_value = 1
+                arg_v = "(" + arg_v + ").v.s"
+              elsif arm_pt_base == "float"
+                @needs_rb_value = 1
+                arg_v = "(" + arg_v + ").v.f"
+              elsif arm_pt_base == "bool"
+                @needs_rb_value = 1
+                arg_v = "(" + arg_v + ").v.b"
+              end
+            end
             if arm_pt_base == "poly" && pk < arg_types.length && arg_types[pk] != "poly" && arg_types[pk] != ""
               arg_v = box_value_to_poly(arg_types[pk], arg_v)
             end
