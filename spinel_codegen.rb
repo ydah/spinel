@@ -18092,7 +18092,7 @@ class Compiler
       ci_s = 0
       diverges = 0
       while ci_s < @cls_names.length
-        if cls_find_method_direct(ci_s, mname) >= 0
+        if cls_find_method(ci_s, mname) >= 0
           urt = cls_method_return(ci_s, mname)
           if urt != "" && urt != "string"
             diverges = 1
@@ -18120,7 +18120,7 @@ class Compiler
     ci = 0
     while ci < @cls_names.length
       rt = ""
-      if cls_find_method_direct(ci, mname) >= 0
+      if cls_find_method(ci, mname) >= 0
         rt = cls_method_return(ci, mname)
       elsif cls_has_attr_reader(ci, mname) == 1
  # An attr_reader returns the ivar type. .
