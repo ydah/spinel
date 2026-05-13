@@ -9935,33 +9935,33 @@ class Compiler
  # finds the ancestor that actually defines the method, then
  # we update *that* class's @cls_meth_ptypes.
         if @current_class_idx >= 0
-          cls_ci_286 = @current_class_idx
-          cls_owner_286 = cls_ci_286
-          midx_286 = cls_find_method_direct(cls_ci_286, mname)
-          if midx_286 < 0
-            owner_286 = find_method_owner(cls_ci_286, mname)
-            if owner_286 != "" && owner_286 != @cls_names[cls_ci_286]
-              cls_owner_286 = find_class_idx(owner_286)
-              if cls_owner_286 >= 0
-                midx_286 = cls_find_method_direct(cls_owner_286, mname)
+          inh_ci = @current_class_idx
+          inh_owner_ci = inh_ci
+          inh_midx = cls_find_method_direct(inh_ci, mname)
+          if inh_midx < 0
+            inh_owner_name = find_method_owner(inh_ci, mname)
+            if inh_owner_name != "" && inh_owner_name != @cls_names[inh_ci]
+              inh_owner_ci = find_class_idx(inh_owner_name)
+              if inh_owner_ci >= 0
+                inh_midx = cls_find_method_direct(inh_owner_ci, mname)
               end
             end
           end
-          if midx_286 >= 0
-            args_id_286 = @nd_arguments[nid]
-            if args_id_286 >= 0
-              arg_ids_286 = get_args(args_id_286)
-              ptypes_286 = cls_meth_ptypes_get(cls_owner_286, midx_286)
-              if ptypes_286.length > 0
-                kk_286 = 0
-                while kk_286 < arg_ids_286.length
-                  at_286 = infer_type(arg_ids_286[kk_286])
-                  if kk_286 < ptypes_286.length
-                    ptypes_286[kk_286] = unify_call_types(ptypes_286[kk_286], at_286, arg_ids_286[kk_286])
+          if inh_midx >= 0
+            inh_args_id = @nd_arguments[nid]
+            if inh_args_id >= 0
+              inh_arg_ids = get_args(inh_args_id)
+              inh_ptypes = cls_meth_ptypes_get(inh_owner_ci, inh_midx)
+              if inh_ptypes.length > 0
+                inh_k = 0
+                while inh_k < inh_arg_ids.length
+                  inh_at = infer_type(inh_arg_ids[inh_k])
+                  if inh_k < inh_ptypes.length
+                    inh_ptypes[inh_k] = unify_call_types(inh_ptypes[inh_k], inh_at, inh_arg_ids[inh_k])
                   end
-                  kk_286 = kk_286 + 1
+                  inh_k = inh_k + 1
                 end
-                cls_meth_ptypes_put(cls_owner_286, midx_286, ptypes_286)
+                cls_meth_ptypes_put(inh_owner_ci, inh_midx, inh_ptypes)
               end
             end
           end
@@ -10230,16 +10230,16 @@ class Compiler
  # teaches the synthetic function to accept the actual
  # arg type instead of the default `mrb_int`.
             if module_name_exists(rcname) == 1
-              mfn239 = rcname + "_cls_" + @nd_name[nid]
-              mi239 = find_method_idx(mfn239)
-              if mi239 >= 0
-                args_id239 = @nd_arguments[nid]
-                if args_id239 >= 0
-                  arg_ids239 = get_args(args_id239)
-                  pnames239 = @meth_param_names[mi239].split(",")
-                  ptypes239 = @meth_param_types[mi239].split(",")
-                  widen_ptypes_from_args(arg_ids239, pnames239, ptypes239)
-                  @meth_param_types[mi239] = ptypes239.join(",")
+              mod_mfn = rcname + "_cls_" + @nd_name[nid]
+              mod_mi = find_method_idx(mod_mfn)
+              if mod_mi >= 0
+                mod_args_id = @nd_arguments[nid]
+                if mod_args_id >= 0
+                  mod_arg_ids = get_args(mod_args_id)
+                  mod_pnames = @meth_param_names[mod_mi].split(",")
+                  mod_ptypes = @meth_param_types[mod_mi].split(",")
+                  widen_ptypes_from_args(mod_arg_ids, mod_pnames, mod_ptypes)
+                  @meth_param_types[mod_mi] = mod_ptypes.join(",")
                 end
               end
             end
@@ -10255,42 +10255,42 @@ class Compiler
  # ternary arms type-mismatch when the caller passes a poly
  # value but the targets' params are still mrb_int.
       if @nd_type[nid] == "CallNode" && @nd_receiver[nid] >= 0
-        outer_recv_304 = @nd_receiver[nid]
-        if @nd_type[outer_recv_304] == "CallNode"
-          inner_recv_304 = @nd_receiver[outer_recv_304]
-          inner_mname_304 = @nd_name[outer_recv_304]
-          if inner_recv_304 >= 0 && @nd_type[inner_recv_304] == "ConstantReadNode"
-            mod_name_304 = @nd_name[inner_recv_304]
-            if module_name_exists(mod_name_304) == 1
-              rconsts_304 = module_acc_resolved(mod_name_304, inner_mname_304)
-              if rconsts_304 != "" && rconsts_304 != "?"
-                cands_304 = rconsts_304.split(";")
-                outer_mname_304 = @nd_name[nid]
-                args_id_304 = @nd_arguments[nid]
-                if args_id_304 >= 0
-                  arg_ids_304 = get_args(args_id_304)
-                  cands_304.each { |cn_304|
-                    cci_304 = find_class_idx(cn_304)
-                    if cci_304 >= 0
-                      cmnames_304 = @cls_cmeth_names[cci_304].split(";")
-                      cmpall_304 = @cls_cmeth_ptypes[cci_304].split("|")
-                      cmidx_304 = 0
-                      while cmidx_304 < cmnames_304.length
-                        if cmnames_304[cmidx_304] == outer_mname_304 && cmidx_304 < cmpall_304.length
-                          cmpt_304 = cmpall_304[cmidx_304].split(",")
-                          kk_304 = 0
-                          while kk_304 < arg_ids_304.length
-                            at_304 = infer_type(arg_ids_304[kk_304])
-                            if kk_304 < cmpt_304.length
-                              cmpt_304[kk_304] = unify_call_types(cmpt_304[kk_304], at_304, arg_ids_304[kk_304])
+        mua_outer_recv = @nd_receiver[nid]
+        if @nd_type[mua_outer_recv] == "CallNode"
+          mua_inner_recv = @nd_receiver[mua_outer_recv]
+          mua_inner_mname = @nd_name[mua_outer_recv]
+          if mua_inner_recv >= 0 && @nd_type[mua_inner_recv] == "ConstantReadNode"
+            mua_mod_name = @nd_name[mua_inner_recv]
+            if module_name_exists(mua_mod_name) == 1
+              mua_rconsts = module_acc_resolved(mua_mod_name, mua_inner_mname)
+              if mua_rconsts != "" && mua_rconsts != "?"
+                mua_cands = mua_rconsts.split(";")
+                mua_outer_mname = @nd_name[nid]
+                mua_args_id = @nd_arguments[nid]
+                if mua_args_id >= 0
+                  mua_arg_ids = get_args(mua_args_id)
+                  mua_cands.each { |mua_cn|
+                    mua_cci = find_class_idx(mua_cn)
+                    if mua_cci >= 0
+                      mua_cmnames = @cls_cmeth_names[mua_cci].split(";")
+                      mua_cmpall = @cls_cmeth_ptypes[mua_cci].split("|")
+                      mua_cmidx = 0
+                      while mua_cmidx < mua_cmnames.length
+                        if mua_cmnames[mua_cmidx] == mua_outer_mname && mua_cmidx < mua_cmpall.length
+                          mua_cmpt = mua_cmpall[mua_cmidx].split(",")
+                          mua_k = 0
+                          while mua_k < mua_arg_ids.length
+                            mua_at = infer_type(mua_arg_ids[mua_k])
+                            if mua_k < mua_cmpt.length
+                              mua_cmpt[mua_k] = unify_call_types(mua_cmpt[mua_k], mua_at, mua_arg_ids[mua_k])
                             end
-                            kk_304 = kk_304 + 1
+                            mua_k = mua_k + 1
                           end
-                          cmpall_304[cmidx_304] = cmpt_304.join(",")
-                          @cls_cmeth_ptypes[cci_304] = cmpall_304.join("|")
+                          mua_cmpall[mua_cmidx] = mua_cmpt.join(",")
+                          @cls_cmeth_ptypes[mua_cci] = mua_cmpall.join("|")
                           @cls_cmeth_ptypes_version = @cls_cmeth_ptypes_version + 1
                         end
-                        cmidx_304 = cmidx_304 + 1
+                        mua_cmidx = mua_cmidx + 1
                       end
                     end
  # When the candidate is a module (not a class),
@@ -10300,14 +10300,14 @@ class Compiler
  # method widening branch above so a
  # `Mod.accessor.method(args)` call site widens
  # the synthetic top-level function's params.
-                    if module_name_exists(cn_304) == 1
-                      mfn_304m = cn_304 + "_cls_" + outer_mname_304
-                      mi_304m = find_method_idx(mfn_304m)
-                      if mi_304m >= 0
-                        pnames_304m = @meth_param_names[mi_304m].split(",")
-                        ptypes_304m = @meth_param_types[mi_304m].split(",")
-                        widen_ptypes_from_args(arg_ids_304, pnames_304m, ptypes_304m)
-                        @meth_param_types[mi_304m] = ptypes_304m.join(",")
+                    if module_name_exists(mua_cn) == 1
+                      mua_mod_mfn = mua_cn + "_cls_" + mua_outer_mname
+                      mua_mod_mi = find_method_idx(mua_mod_mfn)
+                      if mua_mod_mi >= 0
+                        mua_mod_pnames = @meth_param_names[mua_mod_mi].split(",")
+                        mua_mod_ptypes = @meth_param_types[mua_mod_mi].split(",")
+                        widen_ptypes_from_args(mua_arg_ids, mua_mod_pnames, mua_mod_ptypes)
+                        @meth_param_types[mua_mod_mi] = mua_mod_ptypes.join(",")
                       end
                     end
                   }
@@ -17072,10 +17072,10 @@ class Compiler
  # the call site boxes a value-type instance and
  # mismatches sp_box_obj's `void *` slot.
           if all_val == 1
-            type_str314 = "obj_" + @cls_names[i]
+            obj_type_str = "obj_" + @cls_names[i]
             pai = 0
             while pai < @poly_arg_passed_types.length
-              if @poly_arg_passed_types[pai] == type_str314
+              if @poly_arg_passed_types[pai] == obj_type_str
                 all_val = 0
               end
               pai = pai + 1

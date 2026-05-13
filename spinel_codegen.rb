@@ -16947,37 +16947,37 @@ class Compiler
           owner_cmnames = @cls_cmeth_names[owner_ci].split(";")
           owner_cmptypes = @cls_cmeth_ptypes[owner_ci].split("|")
           owner_cmdefaults = @cls_cmeth_defaults[owner_ci].split("|")
-          cmidx239 = 0
-          while cmidx239 < owner_cmnames.length
-            if owner_cmnames[cmidx239] == mname
+          cmidx = 0
+          while cmidx < owner_cmnames.length
+            if owner_cmnames[cmidx] == mname
               break
             end
-            cmidx239 = cmidx239 + 1
+            cmidx = cmidx + 1
           end
-          if cmidx239 < owner_cmnames.length && cmidx239 < owner_cmptypes.length
-            owner_pt = owner_cmptypes[cmidx239].split(",")
+          if cmidx < owner_cmnames.length && cmidx < owner_cmptypes.length
+            owner_pt = owner_cmptypes[cmidx].split(",")
             owner_df = "".split(",")
-            if cmidx239 < owner_cmdefaults.length
-              owner_df = owner_cmdefaults[cmidx239].split(",")
+            if cmidx < owner_cmdefaults.length
+              owner_df = owner_cmdefaults[cmidx].split(",")
             end
-            args_id239 = @nd_arguments[nid]
-            arg_count239 = 0
-            if args_id239 >= 0
-              arg_count239 = get_args(args_id239).length
+            args_id = @nd_arguments[nid]
+            arg_count = 0
+            if args_id >= 0
+              arg_count = get_args(args_id).length
             end
-            kk239 = arg_count239
-            while kk239 < owner_pt.length
-              if kk239 < owner_df.length
-                def_id239 = owner_df[kk239].to_i
-                if def_id239 >= 0
+            kk = arg_count
+            while kk < owner_pt.length
+              if kk < owner_df.length
+                def_id = owner_df[kk].to_i
+                if def_id >= 0
                   if ca == ""
-                    ca = compile_expr(def_id239)
+                    ca = compile_expr(def_id)
                   else
-                    ca = ca + ", " + compile_expr(def_id239)
+                    ca = ca + ", " + compile_expr(def_id)
                   end
                 end
               end
-              kk239 = kk239 + 1
+              kk = kk + 1
             end
           end
           if ca != ""
@@ -18972,40 +18972,40 @@ class Compiler
         pi = pi + 1
       end
       if consensus_ok == 1 && consensus_t != "" && consensus_t != "str_int_hash" && consensus_t != "int_array" && consensus_t != "poly"
-        ctor236 = ""
+        typed_ctor = ""
         if is_empty_hash_literal(rhs_id) == 1
           if consensus_t == "str_str_hash"
             @needs_str_str_hash = 1
-            ctor236 = "sp_StrStrHash_new()"
+            typed_ctor = "sp_StrStrHash_new()"
           elsif consensus_t == "int_str_hash"
             @needs_int_str_hash = 1
-            ctor236 = "sp_IntStrHash_new()"
+            typed_ctor = "sp_IntStrHash_new()"
           elsif consensus_t == "sym_int_hash"
             @needs_sym_int_hash = 1
-            ctor236 = "sp_SymIntHash_new()"
+            typed_ctor = "sp_SymIntHash_new()"
           elsif consensus_t == "sym_str_hash"
             @needs_sym_str_hash = 1
-            ctor236 = "sp_SymStrHash_new()"
+            typed_ctor = "sp_SymStrHash_new()"
           elsif consensus_t == "str_poly_hash"
-            ctor236 = "sp_StrPolyHash_new()"
+            typed_ctor = "sp_StrPolyHash_new()"
           elsif consensus_t == "sym_poly_hash"
-            ctor236 = "sp_SymPolyHash_new()"
+            typed_ctor = "sp_SymPolyHash_new()"
           elsif consensus_t == "poly_poly_hash"
             @needs_poly_poly_hash = 1
             @needs_rb_value = 1
-            ctor236 = "sp_PolyPolyHash_new()"
+            typed_ctor = "sp_PolyPolyHash_new()"
           end
         else
-          ctor236 = empty_array_new_for_type(consensus_t)
+          typed_ctor = empty_array_new_for_type(consensus_t)
         end
-        if ctor236 != ""
+        if typed_ctor != ""
           @needs_gc = 1
-          tmp236 = new_temp
-          emit("  " + c_type(consensus_t) + " " + tmp236 + " = " + ctor236 + ";")
-          ki236 = 0
-          while ki236 < ivars.length
-            emit("  " + self_arrow + sanitize_ivar(ivars[ki236]) + " = " + tmp236 + ";")
-            ki236 = ki236 + 1
+          typed_tmp = new_temp
+          emit("  " + c_type(consensus_t) + " " + typed_tmp + " = " + typed_ctor + ";")
+          typed_ivi = 0
+          while typed_ivi < ivars.length
+            emit("  " + self_arrow + sanitize_ivar(ivars[typed_ivi]) + " = " + typed_tmp + ";")
+            typed_ivi = typed_ivi + 1
           end
           return
         end
