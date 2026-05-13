@@ -38,6 +38,8 @@ class Compiler
     @out = ""
     @deferred_tuple = ""
     @deferred_lambda = ""
+    @meth_blk_param_types = nil
+    @cls_cmeth_blk_param_types = nil
     @indent = 0
     @temp_counter = 0
     @label_counter = 0
@@ -1090,9 +1092,9 @@ class Compiler
  # (a literal block compiles to sp_proc_new(...); a `&proc_var` is
  # the captured `sp_Proc *` local), or "" if the call site provides
  # no block.
-  def block_forward_expr(nid)
+  def block_forward_expr(nid, blk_param_types = "")
     if has_literal_block(nid) == 1
-      return compile_proc_literal(nid)
+      return compile_proc_literal(nid, blk_param_types)
     end
  # Anonymous `&` forwarding (Ruby 3.1+): `inner(&)` where the
  # enclosing method declared `def outer(&)`. The BlockArgumentNode
@@ -11346,6 +11348,13 @@ class Compiler
       scan_fiber_free_vars(elems_list[k], params, locals, free_vars, free_var_types)
       k = k + 1
     end
+ # InterpolatedStringNode parts
+    parts_list = parse_id_list(@nd_parts[nid])
+    k = 0
+    while k < parts_list.length
+      scan_fiber_free_vars(parts_list[k], params, locals, free_vars, free_var_types)
+      k = k + 1
+    end
  # Block body (for non-Fiber.new blocks)
     blk = @nd_block[nid]
     if blk >= 0
@@ -12632,7 +12641,11 @@ class Compiler
  # optional positional params get their defaults filled in, and
  # pass omit_trailing=1 so the &block slot isn't default-padded
  # with "0" — we append the actual proc explicitly below.
-        block_proc = block_forward_expr(nid)
+        blk_types_128 = ""
+        if @meth_blk_param_types != nil && mi < @meth_blk_param_types.length
+          blk_types_128 = @meth_blk_param_types[mi]
+        end
+        block_proc = block_forward_expr(nid, blk_types_128)
         if block_proc != ""
           ca = compile_call_args_with_defaults(nid, mi, 1)
           if ca == ""
@@ -13051,10 +13064,7 @@ class Compiler
  # "" for zero args; pad with "0" so the array has at least
  # one slot (the proc fn's `_unused` fallback expects args[0]
  # to be addressable).
-          ca = compile_call_args(nid)
-          if ca == ""
-            ca = "0"
-          end
+          ca = compile_proc_call_args(nid)
           return "sp_proc_call(lv_" + rname + ", (mrb_int[]){" + ca + "})"
         end
       end
@@ -13072,6 +13082,12 @@ class Compiler
         end
         return "sp_proc_call(" + compile_expr(recv) + ", (mrb_int[]){" + ca_anon + "})"
       end
+    end
+    rt = infer_type(recv)
+    if rt == "proc"
+      ca = compile_proc_call_args(nid)
+      rc = compile_expr_gc_rooted(recv)
+      return "sp_proc_call(" + rc + ", (mrb_int[]){" + ca + "})"
     end
     ""
   end
@@ -17127,6 +17143,32 @@ class Compiler
               end
               kk = kk + 1
             end
+            has_block_param = (owner_pt.length > 0 && owner_pt.last == "proc") ? 1 : 0
+            if has_block_param == 1
+              blk_types = ""
+              if @cls_cmeth_blk_param_types != nil
+                flat_idx = 0
+                ci_walk = 0
+                while ci_walk < owner_ci
+                  if ci_walk < @cls_cmeth_names.length
+                    flat_idx = flat_idx + @cls_cmeth_names[ci_walk].split(";").length
+                  end
+                  ci_walk = ci_walk + 1
+                end
+                flat_idx = flat_idx + cmidx
+                if flat_idx < @cls_cmeth_blk_param_types.length
+                  blk_types = @cls_cmeth_blk_param_types[flat_idx]
+                end
+              end
+              block_proc = block_forward_expr(nid, blk_types)
+              if block_proc != ""
+                if ca != ""
+                  ca = ca + ", " + block_proc
+                else
+                  ca = block_proc
+                end
+              end
+            end
           end
           if ca != ""
             return "sp_" + owner_name + "_cls_" + sanitize_name(mname) + "(" + ca + ")"
@@ -20002,6 +20044,33 @@ class Compiler
         result = result + ", "
       end
       result = result + compile_expr(arg_ids[k])
+      k = k + 1
+    end
+    result
+  end
+
+  def compile_proc_call_args(nid)
+    args_id = @nd_arguments[nid]
+    if args_id < 0
+      return "0"
+    end
+    arg_ids = get_args(args_id)
+    if arg_ids.length == 0
+      return "0"
+    end
+    result = ""
+    k = 0
+    while k < arg_ids.length
+      if k > 0
+        result = result + ", "
+      end
+      val = compile_expr(arg_ids[k])
+      at = infer_type(arg_ids[k])
+      if type_is_pointer(at) == 1
+        result = result + "(mrb_int)(uintptr_t)(" + val + ")"
+      else
+        result = result + val
+      end
       k = k + 1
     end
     result
@@ -24675,6 +24744,12 @@ class Compiler
       scan_lambda_free_vars(elems[k], params, locals, free_vars)
       k = k + 1
     end
+    parts = parse_id_list(@nd_parts[nid])
+    k = 0
+    while k < parts.length
+      scan_lambda_free_vars(parts[k], params, locals, free_vars)
+      k = k + 1
+    end
     if @nd_collection[nid] >= 0
       scan_lambda_free_vars(@nd_collection[nid], params, locals, free_vars)
     end
@@ -25363,17 +25438,23 @@ class Compiler
  # `lv_<bp>` locals — one `mrb_int lv_<bp> = args[<idx>];` line per
  # block param. Used at both proc-fn body emit sites (captures and
  # no-captures branches; identical shape).
-  def proc_fn_args_unpack(bps)
+  def proc_fn_args_unpack(bps, pts = "".split(","))
     s = ""
     bk = 0
     while bk < bps.length
-      s = s + "  mrb_int lv_" + bps[bk] + " = args[" + bk.to_s + "];\n"
+      ct = "mrb_int"
+      expr = "args[" + bk.to_s + "]"
+      if bk < pts.length && pts[bk] != "" && pts[bk] != "int"
+        ct = c_type(pts[bk])
+        expr = "(" + ct + ")(uintptr_t)args[" + bk.to_s + "]"
+      end
+      s = s + "  " + ct + " lv_" + bps[bk] + " = " + expr + ";\n"
       bk = bk + 1
     end
     s
   end
 
-  def compile_proc_literal(nid)
+  def compile_proc_literal(nid, blk_param_types = "")
     blk = @nd_block[nid]
     if blk < 0
       return "sp_proc_new(NULL, NULL, NULL)"
@@ -25436,15 +25517,29 @@ class Compiler
     saved_in_proc_body = @in_proc_body
     saved_proc_captures = @proc_captures
     saved_proc_capture_types = @proc_capture_types
+    saved_heap_hp_names_len = @heap_promoted_names.length
+    saved_heap_hp_cells_len = @heap_promoted_cells.length
     if has_captures == 1
       @in_proc_body = 1
       @proc_captures = captures
       @proc_capture_types = capture_types
+    else
+      @in_proc_body = 0
+      @proc_captures = "".split(",")
+      @proc_capture_types = "".split(",")
     end
     push_scope
+    pts = "".split("|")
+    if blk_param_types != ""
+      pts = blk_param_types.split("|")
+    end
     di = 0
     while di < bps.length
-      declare_var(bps[di], "int")
+      pt = "int"
+      if di < pts.length && pts[di] != ""
+        pt = pts[di]
+      end
+      declare_var(bps[di], pt)
       di = di + 1
     end
     bexpr = "0"
@@ -25487,6 +25582,12 @@ class Compiler
     @in_proc_body = saved_in_proc_body
     @proc_captures = saved_proc_captures
     @proc_capture_types = saved_proc_capture_types
+    while @heap_promoted_names.length > saved_heap_hp_names_len
+      @heap_promoted_names.pop
+    end
+    while @heap_promoted_cells.length > saved_heap_hp_cells_len
+      @heap_promoted_cells.pop
+    end
     @out_lines = save_out
 
     if has_captures == 1
@@ -25525,7 +25626,7 @@ class Compiler
       @lambda_funcs << "static mrb_int "
       @lambda_funcs << fname
       @lambda_funcs << "(void *_cap_raw, mrb_int *args) {\n"
-      @lambda_funcs << proc_fn_args_unpack(bps)
+      @lambda_funcs << proc_fn_args_unpack(bps, pts)
       @lambda_funcs << "  "
       @lambda_funcs << cap_name
       @lambda_funcs << " *_cap = ("
@@ -25555,9 +25656,13 @@ class Compiler
           ci = ci + 1
         end
         if already_promoted == 0
-          cell = "_hcell_" + vn + "_p" + pid.to_s
-          emit("  " + ct + " *" + cell + " = (" + ct + " *)sp_gc_alloc(sizeof(" + ct + "), NULL, NULL);")
-          emit("  *" + cell + " = " + fiber_var_ref(vn) + ";")
+          if @in_proc_body == 1 && proc_capture_index(vn) >= 0
+            cell = "_cap->" + vn
+          else
+            cell = "_hcell_" + vn + "_p" + pid.to_s
+            emit("  " + ct + " *" + cell + " = (" + ct + " *)sp_gc_alloc(sizeof(" + ct + "), NULL, NULL);")
+            emit("  *" + cell + " = " + fiber_var_ref(vn) + ";")
+          end
           @heap_promoted_names.push(vn)
           @heap_promoted_cells.push(cell)
         end
@@ -25588,7 +25693,7 @@ class Compiler
     @lambda_funcs << fname
     @lambda_funcs << "(void *_cap, mrb_int *args) {\n"
     @lambda_funcs << "  (void)_cap;\n"
-    @lambda_funcs << proc_fn_args_unpack(bps)
+    @lambda_funcs << proc_fn_args_unpack(bps, pts)
     if body_stmts != ""
       @lambda_funcs << body_stmts
     end
@@ -31060,6 +31165,10 @@ class Compiler
       @cls_cmeth_live = val
     elsif name == "@cls_meth_live"
       @cls_meth_live = val
+    elsif name == "@meth_blk_param_types"
+      @meth_blk_param_types = val.split("|")
+    elsif name == "@cls_cmeth_blk_param_types"
+      @cls_cmeth_blk_param_types = val.split("|")
     end
   end
 
