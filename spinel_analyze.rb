@@ -10888,6 +10888,144 @@ class Compiler
  # infer_cls_meth_param_from_body's class-promotion shape, but
  # specialised for the String case where the canonical receiver
  # is the primitive rather than a user class.
+ # Walk `nid`'s subtree collecting `(callee_mname, arg_pos)` pairs
+ # for every CallNode whose `arg_pos`-th positional arg is a
+ # LocalVariableReadNode named `pname`. Used by
+ # infer_param_type_from_callee_slot to back-propagate a callee's
+ # concrete slot type to the caller's still-`int` param.
+  def collect_param_callee_slots(nid, pname, acc)
+    if nid < 0
+      return
+    end
+ # Don't cross nested DefNode / ClassNode / ModuleNode bodies.
+    if @nd_type[nid] == "DefNode"
+      return
+    end
+    if @nd_type[nid] == "ClassNode" || @nd_type[nid] == "ModuleNode"
+      return
+    end
+    if @nd_type[nid] == "CallNode"
+      args_id = @nd_arguments[nid]
+      if args_id >= 0
+        aargs = get_args(args_id)
+        ai = 0
+        while ai < aargs.length
+          if @nd_type[aargs[ai]] == "LocalVariableReadNode" && @nd_name[aargs[ai]] == pname
+            acc.push(@nd_name[nid] + "\t" + ai.to_s)
+          end
+          ai = ai + 1
+        end
+      end
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      collect_param_callee_slots(cs[k], pname, acc)
+      k = k + 1
+    end
+  end
+
+ # Walk every method body. For each param still typed "int" (the
+ # placeholder default), look at where it's passed as an arg to
+ # another method. If every observed callee's matching slot is the
+ # same concrete pointer-y type (`ptr` / `obj_<C>` / specific
+ # array/hash), widen the param to that type. Mirrors the shape of
+ # `infer_string_param_from_body` (#450 cascade 2) but driven by
+ # callee-slot evidence rather than receiver-method evidence.
+ #
+ # Originally added for the Db.column_bool shape:
+ #   def self.column_bool(stmt, idx); column_int(stmt, idx) != 0; end
+ # where column_int's slot is `void *` (ptr) via FFI inference
+ # but column_bool's `stmt` stayed mrb_int, breaking C compile at
+ # `sp_Db_cls_column_int(lv_stmt, ...)`.
+  def infer_param_type_from_callee_slot
+    mi = 0
+    while mi < @meth_names.length
+      bid = @meth_body_ids[mi]
+      if bid >= 0
+        pnames = @meth_param_names[mi].split(",")
+        ptypes = @meth_param_types[mi].split(",")
+        changed_cs = 0
+ # Derive the lexical scope from the method name itself —
+ # `Db_cls_column_bool` → "Db" — so a bare sibling call like
+ # `column_int(stmt, idx)` inside the body resolves to the
+ # `Db_cls_column_int` synthetic.
+        saved_scope_cs = @current_lexical_scope
+        mname_cs = @meth_names[mi]
+        cls_marker_cs = mname_cs.index("_cls_")
+        if cls_marker_cs != nil
+          @current_lexical_scope = mname_cs[0, cls_marker_cs]
+        end
+        pk = 0
+        while pk < pnames.length
+          if pk < ptypes.length && ptypes[pk] == "int"
+            obs = "".split(",")
+            collect_param_callee_slots(bid, pnames[pk], obs)
+            agreed = ""
+            disagree = 0
+            kk = 0
+            while kk < obs.length
+              tab = obs[kk].index("\t")
+              if tab >= 0
+                callee_name = obs[kk][0, tab]
+                pos_s = obs[kk][tab + 1, obs[kk].length - tab - 1]
+                pos = pos_s.to_i
+                callee_t = callee_slot_type(callee_name, pos)
+                if callee_t == "ptr" || is_obj_type(callee_t) == 1
+                  if agreed == ""
+                    agreed = callee_t
+                  elsif agreed != callee_t
+                    disagree = 1
+                  end
+                end
+              end
+              kk = kk + 1
+            end
+            if agreed != "" && disagree == 0
+              ptypes[pk] = agreed
+              changed_cs = 1
+            end
+          end
+          pk = pk + 1
+        end
+        @current_lexical_scope = saved_scope_cs
+        if changed_cs == 1
+          @meth_param_types[mi] = ptypes.join(",")
+        end
+      end
+      mi = mi + 1
+    end
+  end
+
+ # Resolve `callee_name` (a bare-call mname or a `<Mod>_cls_<m>`
+ # synthetic) to its param-types array and return the slot at
+ # `pos`, or "" if unresolvable. Used by
+ # infer_param_type_from_callee_slot to look up evidence from a
+ # callee body without committing to receiver-resolution
+ # (`Db.column_int` vs sibling-call `column_int` lookups).
+  def callee_slot_type(callee_name, pos)
+    cmi = find_method_idx(callee_name)
+    if cmi >= 0
+      cpts = @meth_param_types[cmi].split(",")
+      if pos < cpts.length
+        return cpts[pos]
+      end
+    end
+ # Try sibling-class-method synth: `<CurrentScope>_cls_<callee_name>`.
+    if @current_lexical_scope != ""
+      synth = @current_lexical_scope + "_cls_" + callee_name
+      smi = find_method_idx(synth)
+      if smi >= 0
+        spts = @meth_param_types[smi].split(",")
+        if pos < spts.length
+          return spts[pos]
+        end
+      end
+    end
+    ""
+  end
+
   def infer_string_param_from_body
     mi = 0
     while mi < @meth_names.length
@@ -15546,6 +15684,7 @@ class Compiler
       infer_param_array_type_from_body
       narrow_param_types_from_body_method_calls
       infer_string_param_from_body
+      infer_param_type_from_callee_slot
       narrow_param_hash_types_from_body_writes
  # propagate hash-each block-arg types into
  # nested cmeth/method-call param widening. Runs inside
