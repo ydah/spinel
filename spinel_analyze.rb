@@ -11493,20 +11493,21 @@ class Compiler
     end
   end
 
- # Walk a body looking for `pname[<string-literal>]` index reads on
- # `pname`. Returns 1 if any such site exists. Used by the
- # nil-default + hash-index widening pass to decide that the param's
- # static type should be str_str_hash rather than the mrb_int default.
+ # Walk a body looking for `pname[<key>]` index reads on `pname`.
+ # Returns "str" if a StringNode key is seen, "sym" if a SymbolNode
+ # key is seen, "" otherwise. Used by the nil-default + hash-index
+ # widening pass to decide which hash variant the param's static
+ # type should be (str_str_hash vs sym_str_hash).
   def param_used_with_str_index?(nid, pname)
     if nid < 0
-      return 0
+      return ""
     end
  # Don't cross nested scopes — pname may shadow.
     if @nd_type[nid] == "DefNode"
-      return 0
+      return ""
     end
     if @nd_type[nid] == "ClassNode" || @nd_type[nid] == "ModuleNode"
-      return 0
+      return ""
     end
     if @nd_type[nid] == "CallNode" && @nd_name[nid] == "[]"
       recv_pwi = @nd_receiver[nid]
@@ -11514,72 +11515,91 @@ class Compiler
         args_id_pwi = @nd_arguments[nid]
         if args_id_pwi >= 0
           a_ids_pwi = get_args(args_id_pwi)
-          if a_ids_pwi.length >= 1 && @nd_type[a_ids_pwi[0]] == "StringNode"
-            return 1
+          if a_ids_pwi.length >= 1
+            kid_pwi = a_ids_pwi[0]
+            if @nd_type[kid_pwi] == "StringNode"
+              return "str"
+            end
+            if @nd_type[kid_pwi] == "SymbolNode"
+              return "sym"
+            end
           end
         end
       end
     end
  # Recurse into all child fields that can carry CallNode subtrees.
+ # First hit wins; the rare case of mixed str + sym index keys
+ # on the same param falls back to str (the more common shape).
     if @nd_body[nid] >= 0
-      if param_used_with_str_index?(@nd_body[nid], pname) == 1
-        return 1
+      r_pwi = param_used_with_str_index?(@nd_body[nid], pname)
+      if r_pwi != ""
+        return r_pwi
       end
     end
     stmts_pwi = parse_id_list(@nd_stmts[nid])
     k = 0
     while k < stmts_pwi.length
-      if param_used_with_str_index?(stmts_pwi[k], pname) == 1
-        return 1
+      r_pwi = param_used_with_str_index?(stmts_pwi[k], pname)
+      if r_pwi != ""
+        return r_pwi
       end
       k = k + 1
     end
     if @nd_expression[nid] >= 0
-      if param_used_with_str_index?(@nd_expression[nid], pname) == 1
-        return 1
+      r_pwi = param_used_with_str_index?(@nd_expression[nid], pname)
+      if r_pwi != ""
+        return r_pwi
       end
     end
     if @nd_predicate[nid] >= 0
-      if param_used_with_str_index?(@nd_predicate[nid], pname) == 1
-        return 1
+      r_pwi = param_used_with_str_index?(@nd_predicate[nid], pname)
+      if r_pwi != ""
+        return r_pwi
       end
     end
     if @nd_subsequent[nid] >= 0
-      if param_used_with_str_index?(@nd_subsequent[nid], pname) == 1
-        return 1
+      r_pwi = param_used_with_str_index?(@nd_subsequent[nid], pname)
+      if r_pwi != ""
+        return r_pwi
       end
     end
     if @nd_else_clause[nid] >= 0
-      if param_used_with_str_index?(@nd_else_clause[nid], pname) == 1
-        return 1
+      r_pwi = param_used_with_str_index?(@nd_else_clause[nid], pname)
+      if r_pwi != ""
+        return r_pwi
       end
     end
     if @nd_receiver[nid] >= 0
-      if param_used_with_str_index?(@nd_receiver[nid], pname) == 1
-        return 1
+      r_pwi = param_used_with_str_index?(@nd_receiver[nid], pname)
+      if r_pwi != ""
+        return r_pwi
       end
     end
     if @nd_arguments[nid] >= 0
-      if param_used_with_str_index?(@nd_arguments[nid], pname) == 1
-        return 1
+      r_pwi = param_used_with_str_index?(@nd_arguments[nid], pname)
+      if r_pwi != ""
+        return r_pwi
       end
     end
     if @nd_block[nid] >= 0
-      if param_used_with_str_index?(@nd_block[nid], pname) == 1
-        return 1
+      r_pwi = param_used_with_str_index?(@nd_block[nid], pname)
+      if r_pwi != ""
+        return r_pwi
       end
     end
     if @nd_left[nid] >= 0
-      if param_used_with_str_index?(@nd_left[nid], pname) == 1
-        return 1
+      r_pwi = param_used_with_str_index?(@nd_left[nid], pname)
+      if r_pwi != ""
+        return r_pwi
       end
     end
     if @nd_right[nid] >= 0
-      if param_used_with_str_index?(@nd_right[nid], pname) == 1
-        return 1
+      r_pwi = param_used_with_str_index?(@nd_right[nid], pname)
+      if r_pwi != ""
+        return r_pwi
       end
     end
-    0
+    ""
   end
 
  # Check whether the param at index `pi` has a `nil` default value.
@@ -11630,8 +11650,14 @@ class Compiler
         while pk < pnames.length
           if pk < ptypes.length && ptypes[pk] == "int"
             if param_default_is_nil?(defaults_str_m, pk) == 1
-              if param_used_with_str_index?(bid, pnames[pk]) == 1
+              key_kind_m = param_used_with_str_index?(bid, pnames[pk])
+              if key_kind_m == "str"
                 ptypes[pk] = "str_str_hash"
+                @needs_str_str_hash = 1
+                changed_m = 1
+              elsif key_kind_m == "sym"
+                ptypes[pk] = "sym_str_hash"
+                @needs_sym_str_hash = 1
                 changed_m = 1
               end
             end
@@ -11668,8 +11694,14 @@ class Compiler
           while pk < pnames_j.length
             if pk < ptypes_j.length && ptypes_j[pk] == "int"
               if param_default_is_nil?(defaults_str_j, pk) == 1
-                if param_used_with_str_index?(bid_j, pnames_j[pk]) == 1
+                key_kind_j = param_used_with_str_index?(bid_j, pnames_j[pk])
+                if key_kind_j == "str"
                   ptypes_j[pk] = "str_str_hash"
+                  @needs_str_str_hash = 1
+                  m_changed = 1
+                elsif key_kind_j == "sym"
+                  ptypes_j[pk] = "sym_str_hash"
+                  @needs_sym_str_hash = 1
                   m_changed = 1
                 end
               end
