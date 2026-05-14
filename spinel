@@ -42,6 +42,7 @@ OPT_LEVEL="2"
 CC_CMD="cc"
 EXTRA_FLAGS=""
 C_TMP=""
+C_TMP_DIR=""
 EVAL_SCRIPT=""
 EVAL_USED=0
 EVAL_TMP=""
@@ -110,7 +111,7 @@ else
 fi
 AST_TMP="$(mktemp /tmp/spinel_ast.XXXXXX)"
 IR_TMP="$(mktemp /tmp/spinel_ir.XXXXXX)"
-trap 'rm -f "$AST_TMP" "$IR_TMP" "$C_TMP" "$EVAL_TMP"' EXIT
+trap 'rm -f "$AST_TMP" "$IR_TMP" "$EVAL_TMP"; [ -n "$C_TMP_DIR" ] && rm -rf "$C_TMP_DIR"' EXIT
 
 # Step 1: Parse. spinel_parse is C-only; build it via `make parse`
 # (or `make all`) before invoking spinel.
@@ -148,7 +149,8 @@ fi
 if [ $C_ONLY -eq 1 ]; then
   C_FILE="${OUTPUT:-$BASENAME.c}"
 else
-  C_TMP="$(mktemp /tmp/spinel_out.XXXXXX.c)"
+  C_TMP_DIR="$(mktemp -d /tmp/spinel_out.XXXXXX)" || { echo "spinel: mktemp -d failed" >&2; exit 1; }
+  C_TMP="$C_TMP_DIR/out.c"
   C_FILE="$C_TMP"
 fi
 
