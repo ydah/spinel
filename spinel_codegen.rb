@@ -18580,6 +18580,20 @@ class Compiler
         end
       end
     end
+ # SP_TAG_STR arm for length / size. `v.length` where v is poly
+ # (e.g. v came from `poly_array[i]`) carrying a string at
+ # runtime needs a tag-dispatch arm — without this the only
+ # length emits live inside the SP_TAG_OBJ block below (typed
+ # array variants), so a string-tagged poly always read 0.
+ # Surfaces in `if v.is_a?(String) && v.length > 0 ; ... end`
+ # against a poly_array[i] receiver: the && condition's second
+ # half stays 0, the then-arm never fires, and the user-level
+ # guarded code path is silently skipped.
+    if mname == "length" || mname == "size"
+      slen_c = "sp_str_length(" + recv_tmp + ".v.s)"
+      slen_rhs = is_poly_ret == 1 ? "sp_box_int(" + slen_c + ")" : slen_c
+      emit("  if (" + recv_tmp + ".tag == SP_TAG_STR) " + tmp + " = " + slen_rhs + ";")
+    end
     emit("  if (" + recv_tmp + ".tag == SP_TAG_OBJ) {")
  # User-class dispatch
     i = 0
