@@ -23203,10 +23203,15 @@ class Compiler
         end
       end
     end
-    if t == "LocalVariableWriteNode" && @nd_name[body_nid] == vname
+    if (t == "LocalVariableWriteNode" || t == "LocalVariableOperatorWriteNode") && @nd_name[body_nid] == vname
       return 1
     end
  # Recurse into children
+    if @nd_expression[body_nid] >= 0
+      if body_mutates_var?(@nd_expression[body_nid], vname) == 1
+        return 1
+      end
+    end
     if @nd_body[body_nid] >= 0
       if body_mutates_var?(@nd_body[body_nid], vname) == 1
         return 1
