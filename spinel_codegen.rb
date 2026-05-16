@@ -17147,6 +17147,31 @@ class Compiler
         args_id = @nd_arguments[nid]
         if args_id >= 0
           aargs = get_args(args_id)
+ # `h.merge(c: 3)` shorthand: the arg is a KeywordHashNode
+ # rather than a regular HashNode. compile_expr on it falls
+ # through to 0; build the matching sp_SymPolyHash inline
+ # from the kwarg pairs. Boxes each value to sp_RbVal so
+ # the poly slot is populated correctly. Mirrors the
+ # sym_int_hash kwarg-as-bundle path. Issue #551.
+          if aargs.length >= 1 && @nd_type[aargs[0]] == "KeywordHashNode"
+            tmp_kw = new_temp
+            emit("  sp_SymPolyHash *" + tmp_kw + " = sp_SymPolyHash_new();")
+            elems_kw = parse_id_list(@nd_elements[aargs[0]])
+            ek_kw = 0
+            while ek_kw < elems_kw.length
+              if @nd_type[elems_kw[ek_kw]] == "AssocNode"
+                key_kw = @nd_key[elems_kw[ek_kw]]
+                val_kw = @nd_expression[elems_kw[ek_kw]]
+                if key_kw >= 0 && val_kw >= 0 && @nd_type[key_kw] == "SymbolNode"
+                  emit("  sp_SymPolyHash_set(" + tmp_kw + ", " + compile_expr(key_kw) + ", " + box_expr_to_poly(val_kw) + ");")
+                end
+              end
+              ek_kw = ek_kw + 1
+            end
+            tmp = new_temp
+            emit("  sp_SymPolyHash *" + tmp + " = sp_SymPolyHash_merge(" + rc + ", " + tmp_kw + ");")
+            return tmp
+          end
           if aargs.length == 1
             arg_t = infer_type(aargs[0])
             if arg_t == "sym_poly_hash"
@@ -17270,6 +17295,26 @@ class Compiler
           end
         end
       end
+ # fetch / dup -- sibling of #510. fetch's default is boxed
+ # to sp_RbVal so the ternary's two arms agree on type
+ # (sp_StrPolyHash_get returns sp_RbVal). Issue #551.
+      if mname == "fetch"
+        args_id_f = @nd_arguments[nid]
+        if args_id_f >= 0
+          aargs_f = get_args(args_id_f)
+          if aargs_f.length >= 1
+            key_f = compile_expr_as_string(aargs_f[0])
+            if aargs_f.length >= 2
+              defval_f = box_expr_to_poly(aargs_f[1])
+              return "(sp_StrPolyHash_has_key(" + rc + ", " + key_f + ") ? sp_StrPolyHash_get(" + rc + ", " + key_f + ") : (" + defval_f + "))"
+            end
+            return "sp_StrPolyHash_get(" + rc + ", " + key_f + ")"
+          end
+        end
+      end
+      if mname == "dup" || mname == "clone"
+        return "sp_StrPolyHash_dup(" + rc + ")"
+      end
     end
     if recv_type == "poly_poly_hash"
       args_id_ph = @nd_arguments[nid]
@@ -17364,6 +17409,10 @@ class Compiler
         arg = compile_arg0(nid)
         emit("  sp_StrIntHash *" + tmp + " = sp_StrIntHash_merge(" + rc + ", " + arg + ");")
         return tmp
+      end
+ # dup -- sibling of #510's sym_str_hash.dup. Issue #551.
+      if mname == "dup" || mname == "clone"
+        return "sp_StrIntHash_dup(" + rc + ")"
       end
       if mname == "to_a"
         tt = "tuple:string,int"
