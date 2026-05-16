@@ -30094,11 +30094,23 @@ class Compiler
       end
       tmp_arrn = new_temp
       tmp_in = new_temp
+ # When the block body returns an array (or any pointer-shaped
+ # value), the outer .map collects them into a sp_PtrArray
+ # rather than sp_IntArray (which would pun the IntArray
+ # pointers as mrb_int and trip -Wint-conversion). Issue #553:
+ # `2.times.map { gets.split.map &:to_i }` builds an
+ # array-of-IntArrays; static type is int_array_ptr_array
+ # and inspect knows how to render it.
+      nested_arr_outer = 0
       if res_type == "string"
         @needs_str_array = 1
         emit("  sp_StrArray *" + tmp_arrn + " = sp_StrArray_new();")
       elsif res_type == "float"
         emit("  sp_FloatArray *" + tmp_arrn + " = sp_FloatArray_new();")
+      elsif res_type == "int_array" || res_type == "str_array" || res_type == "float_array" || res_type == "sym_array" || res_type == "poly_array" || res_type.end_with?("_ptr_array")
+        @needs_gc = 1
+        nested_arr_outer = 1
+        emit("  sp_PtrArray *" + tmp_arrn + " = sp_PtrArray_new();")
       else
         @needs_int_array = 1
         emit("  sp_IntArray *" + tmp_arrn + " = sp_IntArray_new();")
@@ -30128,6 +30140,8 @@ class Compiler
             emit("  sp_StrArray_push(" + tmp_arrn + ", " + lastv + ");")
           elsif res_type == "float"
             emit("  sp_FloatArray_push(" + tmp_arrn + ", " + lastv + ");")
+          elsif nested_arr_outer == 1
+            emit("  sp_PtrArray_push(" + tmp_arrn + ", " + lastv + ");")
           else
             emit("  sp_IntArray_push(" + tmp_arrn + ", " + lastv + ");")
           end
