@@ -13080,7 +13080,7 @@ class Compiler
         return "sp_time_yday(" + rc + ")"
       end
       if mname == "isdst" || mname == "dst?"
-        return "sp_time_isdst(" + rc + ")"
+        return "(sp_time_isdst(" + rc + ") != 0)"
       end
       if mname == "utc_offset" || mname == "gmt_offset" || mname == "gmtoff"
         return "sp_time_utc_offset(" + rc + ")"

@@ -3716,9 +3716,16 @@ class Compiler
  # receiver so user classes defining same-named methods still
  # flow through normal resolution. Local Time.new is in scope;
  # the fixed-offset 7-arg form is a separate Issue.
-    if mname == "year" || mname == "mon" || mname == "month" || mname == "mday" || mname == "day" || mname == "hour" || mname == "min" || mname == "sec" || mname == "wday" || mname == "yday" || mname == "isdst" || mname == "dst?" || mname == "utc_offset" || mname == "gmt_offset" || mname == "gmtoff"
+    if mname == "year" || mname == "mon" || mname == "month" || mname == "mday" || mname == "day" || mname == "hour" || mname == "min" || mname == "sec" || mname == "wday" || mname == "yday" || mname == "utc_offset" || mname == "gmt_offset" || mname == "gmtoff"
       if recv >= 0 && infer_type(recv) == "time"
         return "int"
+      end
+    end
+ # isdst / dst? are predicates: CRuby returns true / false,
+ # not 0 / 1, so they infer as bool (not the int accessor group).
+    if mname == "isdst" || mname == "dst?"
+      if recv >= 0 && infer_type(recv) == "time"
+        return "bool"
       end
     end
     if mname == "zone"

@@ -14,6 +14,8 @@ puts u.wday
 puts u.yday
 puts u.utc_offset
 puts u.zone
+puts u.isdst
+puts u.dst?
 p u
 puts u
 
