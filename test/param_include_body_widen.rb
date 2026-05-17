@@ -5,7 +5,7 @@
 # int/nil-defaulted param surfaced as "cannot resolve call to
 # 'include?' on int" and silently returned 0.
 #
-# Post-fix: is_lengthlike_only_method also matches `include?`,
+# Post-fix: is_collection_query_method also matches `include?`,
 # so the param widens to flat `poly`. emit_poly_builtin_dispatch
 # emits include? arms across the relevant Array / Hash variants
 # keyed by the arg type (Hash#include? aliases has_key?).

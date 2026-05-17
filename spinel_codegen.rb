@@ -6573,7 +6573,7 @@ class Compiler
     if @needs_poly_poly_hash == 1
       @needs_method = 1
     end
-    scan_for_dig_usage(@root_id)
+    scan_for_container_typedef_usage(@root_id)
  # Same shape for the class-hierarchy tables / helpers:
  # @needs_class_table / @needs_class_parents /
  # @needs_class_ancestors / @needs_class_for_poly are set
@@ -10189,11 +10189,18 @@ class Compiler
     end
   end
 
- # Pre-scan for `recv.dig(...)` calls so emit_dig_step's full
- # arm set has every typedef it references. The compile-side
- # arms set @needs flags too late: typedef emission runs
- # before the body compile. Issue #555 case 07.
-  def scan_for_dig_usage(nid)
+ # Pre-scan for container method calls whose full poly-recv
+ # arm set references typedefs that wouldn't otherwise be
+ # emitted. Currently arms:
+ #   - dig (#555 case 07) -- emit_dig_step's Sym-keyed hash
+ #     arms reference SymIntHash / SymStrHash / SymPolyHash
+ #     typedefs.
+ #   - include? (#558) -- emit_poly_builtin_dispatch's arg-
+ #     keyed include? arms reference the same Sym-keyed and
+ #     Str-poly-keyed typedefs.
+ # Both pass-side `@needs_` flips run after the typedef-emit
+ # pass; this pre-scan sets them ahead of time.
+  def scan_for_container_typedef_usage(nid)
     if nid < 0
       return
     end
@@ -10246,7 +10253,7 @@ class Compiler
     push_child_ids(nid, cs_sd)
     k_sd = 0
     while k_sd < cs_sd.length
-      scan_for_dig_usage(cs_sd[k_sd])
+      scan_for_container_typedef_usage(cs_sd[k_sd])
       k_sd = k_sd + 1
     end
   end

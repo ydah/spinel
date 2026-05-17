@@ -11998,7 +11998,7 @@ class Compiler
  # storage. Issue #552. Conservative list: only methods that
  # truly don't exist on Integer (so widening is sound and no
  # caller breaks from a previously-int-typed arg path).
-  def is_lengthlike_only_method(mname)
+  def is_collection_query_method(mname)
     if mname == "length" || mname == "size"
       return 1
     end
@@ -12036,7 +12036,7 @@ class Compiler
             saw = 0
             kk = 0
             while kk < called.length
-              if is_lengthlike_only_method(called[kk]) == 1
+              if is_collection_query_method(called[kk]) == 1
                 saw = 1
               end
               kk = kk + 1
@@ -12079,7 +12079,7 @@ class Compiler
                 sawc = 0
                 kk = 0
                 while kk < called_c.length
-                  if is_lengthlike_only_method(called_c[kk]) == 1
+                  if is_collection_query_method(called_c[kk]) == 1
                     sawc = 1
                   end
                   kk = kk + 1
