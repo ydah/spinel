@@ -17514,6 +17514,27 @@ class Compiler
         @needs_rb_value = 1
         return "sp_PolyPolyHash_values(" + rc + ")"
       end
+ # fetch / dup / delete -- sibling of the per-variant arms
+ # for sym/str_poly_hash. Issue #560. fetch inlines as
+ # has_key + get with the default boxed to sp_RbVal so the
+ # ternary's two arms agree on type.
+      if mname == "fetch"
+        args_id_f = @nd_arguments[nid]
+        if args_id_f >= 0
+          aargs_f = get_args(args_id_f)
+          if aargs_f.length >= 1
+            key_f = box_expr_to_poly(aargs_f[0])
+            if aargs_f.length >= 2
+              defval_f = box_expr_to_poly(aargs_f[1])
+              return "(sp_PolyPolyHash_has_key(" + rc + ", " + key_f + ") ? sp_PolyPolyHash_get(" + rc + ", " + key_f + ") : (" + defval_f + "))"
+            end
+            return "sp_PolyPolyHash_get(" + rc + ", " + key_f + ")"
+          end
+        end
+      end
+      if mname == "dup" || mname == "clone"
+        return "sp_PolyPolyHash_dup(" + rc + ")"
+      end
     end
     if recv_type == "str_int_hash"
       if mname == "[]"
